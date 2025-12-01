@@ -19,14 +19,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         
         # 设置Content-Security-Policy
         # 允许Cloudflare Turnstile所需的资源
+        # 使用通配符以支持所有Cloudflare子域名
         csp_policy = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com https://static.cloudflareinsights.com; "
-            "frame-src 'self' https://challenges.cloudflare.com; "
-            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://challenges.cloudflare.com https://*.cloudflare.com https://*.cloudflareinsights.com; "
+            "frame-src 'self' https://challenges.cloudflare.com https://*.cloudflare.com; "
+            "style-src 'self' 'unsafe-inline' https://*.cloudflare.com; "
             "img-src 'self' data: https:; "
             "font-src 'self' data:; "
-            "connect-src 'self' https://challenges.cloudflare.com https://static.cloudflareinsights.com;"
+            "connect-src 'self' https://challenges.cloudflare.com https://*.cloudflare.com https://*.cloudflareinsights.com;"
         )
         
         response.headers["Content-Security-Policy"] = csp_policy
