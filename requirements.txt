@@ -13,3 +13,5 @@ aiosmtplib
 aiohttp
 captcha
 alembic
+asyncpg
+aiomysql

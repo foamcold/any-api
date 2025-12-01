@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
             
             print("正在检查数据库迁移...")
             alembic_cfg = Config("alembic.ini")
-            command.upgrade(alembic_cfg, "head")
+            await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
             print("✓ 数据库迁移完成")
         except Exception as e:
             print(f"警告: 自动迁移失败: {e}")
