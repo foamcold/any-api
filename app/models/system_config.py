@@ -12,8 +12,8 @@ class SystemConfig(Base):
     server_url = Column(String, nullable=True, default=None)
     
     # 注册配置
-    allow_registration = Column(Boolean, default=False)
-    allow_password_login = Column(Boolean, default=False)
+    allow_registration = Column(Boolean, default=True)
+    allow_password_login = Column(Boolean, default=True)
     require_email_verification = Column(Boolean, default=False)
     enable_turnstile = Column(Boolean, default=False)
     enable_captcha = Column(Boolean, default=False)
