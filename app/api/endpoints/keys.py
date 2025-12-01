@@ -69,18 +69,38 @@ async def create_official_key(
     current_user: User = Depends(deps.get_current_active_user),
 ) -> Any:
     """
-    Create new official key.
+    Create new official key, or reuse an existing unlinked key.
     """
-    key = OfficialKey(
+    # With the new composite unique constraint, we just need to check
+    # if the exact key-user-channel combination already exists.
+    # The database will enforce the uniqueness.
+    
+    result = await db.execute(
+        select(OfficialKey).filter_by(
+            key=key_in.key,
+            user_id=current_user.id,
+            channel_id=key_in.channel_id
+        )
+    )
+    existing_key = result.scalar_one_or_none()
+
+    if existing_key:
+        raise HTTPException(
+            status_code=409,
+            detail="此密钥已存在于当前渠道中。",
+        )
+
+    # If not exists, create a new one.
+    new_key = OfficialKey(
         key=key_in.key,
         user_id=current_user.id,
         is_active=key_in.is_active,
         channel_id=key_in.channel_id,
     )
-    db.add(key)
+    db.add(new_key)
     await db.commit()
-    await db.refresh(key)
-    return key
+    await db.refresh(new_key)
+    return new_key
 
 @router.post("/official/batch")
 async def create_official_keys_batch(

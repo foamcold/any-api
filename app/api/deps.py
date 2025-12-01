@@ -9,7 +9,7 @@ from app.core import security
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.user import User
-from app.models.key import ExclusiveKey
+from app.models.key import ExclusiveKey, OfficialKey
 from app.schemas.token import TokenPayload
 from app.services.gemini_service import gemini_service
 from app.services.claude_service import claude_service
@@ -190,7 +190,7 @@ async def get_optional_current_user(
 async def get_official_key_from_proxy(
     request: Request,
     db: AsyncSession = Depends(get_db)
-) -> Tuple[str, Optional[User]]:
+) -> Tuple[OfficialKey, Optional[User]]:
     """
     从代理请求中提取、验证并返回一个有效的官方API密钥。
     - 如果提供的是专属密钥 (gapi-...), 则验证并返回一个轮询的官方密钥。
@@ -237,27 +237,30 @@ async def get_official_key_from_proxy(
         
         print(f"DEBUG: deps - 专属密钥绑定渠道: ID={channel.id}, 名称={channel.name}, 类型={channel_type}")
         
+        official_key_obj = None
         try:
             if channel_type == "claude":
-                 official_key = await claude_service.get_active_key_str(db, channel_id=channel.id)
-            elif channel_type == "openai":
-                 # 暂时复用 GeminiService (它查询 OfficialKey 表)
-                 official_key = await gemini_service.get_active_key_str(db, channel_id=channel.id)
-            elif channel_type == "gemini":
-                 official_key = await gemini_service.get_active_key_str(db, channel_id=channel.id)
-            else:
-                 # 尝试使用 GeminiService 作为通用处理
-                 official_key = await gemini_service.get_active_key_str(db, channel_id=channel.id)
-                 
-            print(f"DEBUG: deps - 成功从渠道 {channel.name} 获取到官方密钥: {official_key[:20]}...")
-        except HTTPException as e:
-            if e.status_code == 503:
-                 error_detail = f"渠道 '{channel.name}' (类型: {channel_type}, ID: {channel.id}) 下没有可用的官方密钥。请在后台管理中为该渠道添加官方密钥。"
-                 print(f"DEBUG: deps - 错误: {error_detail}")
-                 raise HTTPException(status_code=503, detail=error_detail)
-            raise e
+                official_key_obj = await claude_service.get_active_key(db, channel_id=channel.id)
+            elif channel_type in ["openai", "gemini"]:
+                official_key_obj = await gemini_service.get_active_key(db, channel_id=channel.id)
+            else:  # 为其他可能的类型提供一个默认回退
+                official_key_obj = await gemini_service.get_active_key(db, channel_id=channel.id)
 
-        return official_key, user
+            if not official_key_obj:
+                error_detail = f"渠道 '{channel.name}' (类型: {channel_type}, ID: {channel.id}) 下没有可用的官方密钥。"
+                raise HTTPException(status_code=503, detail=error_detail)
+
+            print(f"DEBUG: deps - 成功从渠道 {channel.name} 获取到官方密钥: {official_key_obj.key[:8]}...")
+            return official_key_obj, user
+
+        except HTTPException as e:
+            # 重复抛出已知的HTTP异常
+            raise e
+        except Exception as e:
+            # 捕获在获取密钥期间可能发生的任何其他意外错误
+            raise HTTPException(status_code=500, detail=f"获取密钥时发生未知错误: {e}")
     else:
-        # 是普通密钥，直接透传, 没有关联用户
-        return client_key, None
+        # 是普通密钥, 无法直接关联到数据库中的对象，日志记录功能将受限
+        # 为了兼容性，我们创建一个临时的、不保存到数据库的 OfficialKey 对象
+        temp_key_obj = OfficialKey(key=client_key)
+        return temp_key_obj, None

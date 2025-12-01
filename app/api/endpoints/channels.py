@@ -6,6 +6,7 @@ from sqlalchemy import func
 from app.api import deps
 from app.models.user import User
 from app.models.channel import Channel as ChannelModel
+from app.models.key import OfficialKey
 from app.schemas.channel import Channel as ChannelSchema, ChannelCreate, ChannelUpdate
 
 router = APIRouter()
@@ -96,6 +97,14 @@ async def delete_channel(
     if not channel:
         raise HTTPException(status_code=404, detail="渠道不存在")
     
+    # Unlink official keys
+    result = await db.execute(
+        select(OfficialKey).where(OfficialKey.channel_id == channel_id)
+    )
+    for key in result.scalars().all():
+        key.channel_id = None
+        key.is_active = False # Deactivate key when channel is deleted
+        
     await db.delete(channel)
     await db.commit()
     

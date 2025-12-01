@@ -44,7 +44,10 @@ async def read_logs(
     Retrieve logs.
     """
     skip = (page - 1) * size
-    base_query = select(Log).filter(Log.user_id == current_user.id)
+    if current_user.role in ["admin", "super_admin"]:
+        base_query = select(Log)
+    else:
+        base_query = select(Log).filter(Log.user_id == current_user.id)
     
     # Get total count
     count_query = select(func.count()).select_from(base_query.subquery())

@@ -77,15 +77,14 @@ class GeminiService:
         await db.commit()
         return next_key
 
-    async def get_active_key_str(self, db: AsyncSession, channel_id: int = None) -> str:
+    async def get_active_key(self, db: AsyncSession, channel_id: int = None) -> OfficialKey:
         """
-        Finds and returns an active key string by iterating through available keys.
+        Finds and returns an active OfficialKey object by iterating through available keys.
         """
         stmt = select(OfficialKey)
         if channel_id:
             stmt = stmt.filter(OfficialKey.channel_id == channel_id)
         
-        stmt = stmt.order_by(OfficialKey.id)
         result = await db.execute(stmt)
         all_keys = result.scalars().all()
         
@@ -96,9 +95,16 @@ class GeminiService:
         for _ in range(len(all_keys)):
             key_obj = await self.get_next_key(db, channel_id=channel_id)
             if key_obj.is_active:
-                return key_obj.key
+                return key_obj
 
         raise HTTPException(status_code=503, detail=f"All official keys are disabled{' for this channel' if channel_id else ''}")
+
+    async def get_active_key_str(self, db: AsyncSession, channel_id: int = None) -> str:
+        """
+        Finds and returns an active key string.
+        """
+        key_obj = await self.get_active_key(db, channel_id=channel_id)
+        return key_obj.key
 
     async def update_key_status(self, db: AsyncSession, key_str: str, status_code: int, input_tokens: int = 0, output_tokens: int = 0):
         result = await db.execute(select(OfficialKey).filter(OfficialKey.key == key_str))

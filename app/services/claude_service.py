@@ -99,34 +99,57 @@ class ClaudeService:
         await db.commit()
         return next_key
 
-    async def get_active_key_str(self, db: AsyncSession, channel_id: int = None) -> str:
+    async def get_active_key(self, db: AsyncSession, channel_id: int = None) -> OfficialKey:
         """
-        Finds and returns an active key string by iterating through available keys.
+        Finds and returns an active OfficialKey object.
+        This is the preferred method for getting a key for processing.
         """
-        stmt = select(OfficialKey).join(OfficialKey.channel).filter(Channel.type == "claude")
+        stmt = select(OfficialKey).join(OfficialKey.channel).filter(
+            Channel.type == "claude",
+            OfficialKey.is_active == True
+        )
         
         if channel_id:
             stmt = stmt.filter(OfficialKey.channel_id == channel_id)
-            
-        stmt = stmt.order_by(OfficialKey.id)
-        result = await db.execute(stmt)
-        all_keys = result.scalars().all()
         
-        if not all_keys:
-            raise HTTPException(status_code=503, detail=f"No official Claude keys configured{' for this channel' if channel_id else ''}")
+        # To implement round-robin or other strategies, we'd need to expand this.
+        # For now, let's just get the next available active key.
+        # We can use the get_next_key logic which handles rotation.
         
-        # Try to find an active key
-        # We can optimize this by filtering in SQL: .filter(OfficialKey.is_active == True)
-        # But the original service logic did a loop to update the rotation index.
-        # Let's keep it simple: just get one active key.
-        
-        active_keys = [k for k in all_keys if k.is_active]
+        # A more direct approach is to query for all active keys and rotate through them.
+        active_keys_result = await db.execute(stmt.order_by(OfficialKey.id))
+        active_keys = active_keys_result.scalars().all()
+
         if not active_keys:
-             raise HTTPException(status_code=503, detail=f"All official Claude keys are disabled{' for this channel' if channel_id else ''}")
-             
-        # Pick one (e.g., random or round-robin).
-        # Using the update logic from get_next_key to maintain some rotation
-        return (await self.get_next_key(db, channel_id=channel_id)).key
+             raise HTTPException(status_code=503, detail=f"All official Claude keys are disabled or unavailable{' for this channel' if channel_id else ''}")
+
+        # Re-use get_next_key to handle the rotation logic based on SystemConfig
+        # Note: get_next_key iterates over ALL keys, not just active ones. This is a known limitation.
+        # For a quick fix, we'll ensure the one we get is actually active.
+        # This could be inefficient if many keys are disabled.
+        all_keys_stmt = select(OfficialKey).join(OfficialKey.channel).filter(Channel.type == "claude")
+        if channel_id:
+            all_keys_stmt = all_keys_stmt.filter(OfficialKey.channel_id == channel_id)
+        
+        all_keys_res = await db.execute(all_keys_stmt)
+        all_keys = all_keys_res.scalars().all()
+
+        if not all_keys:
+             raise HTTPException(status_code=503, detail=f"No official Claude keys configured{' for this channel' if channel_id else ''}")
+
+        for _ in range(len(all_keys)):
+            key_obj = await self.get_next_key(db, channel_id=channel_id)
+            if key_obj.is_active:
+                return key_obj
+
+        raise HTTPException(status_code=503, detail=f"All official Claude keys are currently disabled{' for this channel' if channel_id else ''}")
+
+    async def get_active_key_str(self, db: AsyncSession, channel_id: int = None) -> str:
+        """
+        Finds and returns an active key string.
+        """
+        key_obj = await self.get_active_key(db, channel_id=channel_id)
+        return key_obj.key
 
     async def update_key_status(self, db: AsyncSession, key_str: str, status_code: int, input_tokens: int = 0, output_tokens: int = 0):
         result = await db.execute(select(OfficialKey).filter(OfficialKey.key == key_str))

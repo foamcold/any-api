@@ -29,19 +29,16 @@ async def get_system_stats(
     )
     total_requests = total_requests_result.scalar_one_or_none() or 0
 
-    # 活跃密钥数 (官方 + 独占)
-    active_official_keys_result = await db.execute(
-        select(func.count(OfficialKey.id))
-        .filter(OfficialKey.user_id == current_user.id, OfficialKey.is_active == True)
+    # 活跃密钥数 (不重复的、状态正常的渠道密钥)
+    active_keys_result = await db.execute(
+        select(func.count(func.distinct(OfficialKey.key)))
+        .filter(
+            OfficialKey.user_id == current_user.id,
+            OfficialKey.is_active == True,
+            (OfficialKey.last_status == "active") | (OfficialKey.last_status == "200")
+        )
     )
-    active_official_keys = active_official_keys_result.scalar_one_or_none() or 0
-
-    active_exclusive_keys_result = await db.execute(
-        select(func.count(ExclusiveKey.id))
-        .filter(ExclusiveKey.user_id == current_user.id, ExclusiveKey.is_active == True)
-    )
-    active_exclusive_keys = active_exclusive_keys_result.scalar_one_or_none() or 0
-    active_keys = active_official_keys + active_exclusive_keys
+    active_keys = active_keys_result.scalar_one_or_none() or 0
 
     # 总令牌数 (从日志统计)
     total_tokens_result = await db.execute(

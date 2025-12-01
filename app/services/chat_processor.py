@@ -160,7 +160,7 @@ class ChatProcessor:
     ) -> Tuple[Dict, int, ApiFormat]:
         """处理非流式请求"""
         target_url = f"{settings.GEMINI_BASE_URL}/v1beta/models/{model}:generateContent"
-        headers = {"Content-Type": "application/json", "x-goog-api-key": official_key}
+        headers = {"Content-Type": "application/json", "x-goog-api-key": official_key.key if hasattr(official_key, 'key') else official_key}
         
         response = await self.client.post(target_url, json=payload, headers=headers)
         
@@ -189,7 +189,7 @@ class ChatProcessor:
     ) -> AsyncGenerator[bytes, None]:
         """处理流式请求"""
         target_url = f"{settings.GEMINI_BASE_URL}/v1beta/models/{model}:streamGenerateContent"
-        headers = {"Content-Type": "application/json", "x-goog-api-key": official_key}
+        headers = {"Content-Type": "application/json", "x-goog-api-key": official_key.key if hasattr(official_key, 'key') else official_key}
 
         async with self.client.stream("POST", target_url, json=payload, headers=headers) as response:
             if response.status_code != 200:

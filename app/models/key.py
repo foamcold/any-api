@@ -3,11 +3,16 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
+from sqlalchemy import UniqueConstraint
+
 class OfficialKey(Base):
     __tablename__ = "official_keys"
+    __table_args__ = (
+        UniqueConstraint('key', 'user_id', 'channel_id', name='_user_channel_key_uc'),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
-    key = Column(String, unique=True, index=True, nullable=False)
+    key = Column(String, index=True, nullable=False) # Removed unique=True from here
     user_id = Column(Integer, ForeignKey("users.id"))
     channel_id = Column(Integer, ForeignKey("channels.id"), nullable=True)
     usage_count = Column(Integer, default=0)
