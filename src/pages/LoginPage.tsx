@@ -21,7 +21,7 @@ export default function LoginPage() {
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [verificationCode, setVerificationCode] = useState('');
-    const [turnstileToken, setTurnstileToken] = useState('');
+    const turnstileTokenRef = useRef<string>('');
     useState(''); // 仍然需要，但由弹窗管理
     useState(''); // 同上
     const { config: systemConfig, loading: configLoading } = useSystem();
@@ -33,7 +33,8 @@ export default function LoginPage() {
     const { toast } = useToast();
     const auth = useAuth();
     const emailInputRef = useRef<HTMLInputElement>(null);
-    const sendCodeTurnstileRef = useRef<TurnstileInstance>(null);
+    const turnstileRef = useRef<TurnstileInstance>(null);
+    const [currentAction, setCurrentAction] = useState<'login' | 'register' | 'reset' | 'sendCode' | null>(null);
 
     const validateEmail = (email: string) => {
         if (!email) return "邮箱不能为空";
@@ -136,7 +137,7 @@ export default function LoginPage() {
             });
             setCountdown(0); // 发送失败时重置倒计时
         } finally {
-            sendCodeTurnstileRef.current?.reset();
+            turnstileRef.current?.reset();
         }
     };
 
@@ -176,7 +177,8 @@ export default function LoginPage() {
         // 如果需要 Turnstile，则先保存验证码信息，再触发 Turnstile
         if (systemConfig?.enable_turnstile && systemConfig.turnstile_site_key) {
             setCaptchaInfoForTurnstile(captchaInfo);
-            sendCodeTurnstileRef.current?.execute();
+            setCurrentAction('sendCode');
+            turnstileRef.current?.execute();
         } else {
             // 否则直接发送
             proceedWithSendCode(captchaInfo);
@@ -189,21 +191,38 @@ export default function LoginPage() {
         if (!systemConfig?.require_email_verification) {
             // 在这里可以选择静默失败或给出提示
             // 为避免干扰用户，选择静默处理并重置
-            sendCodeTurnstileRef.current?.reset();
+            turnstileRef.current?.reset();
             return;
         }
-        proceedWithSendCode(captchaInfoForTurnstile, token);
-        // 重置临时状态
+        turnstileTokenRef.current = token;
+        
+        switch (currentAction) {
+            case 'login':
+                handleLogin(new Event('submit') as unknown as React.FormEvent);
+                break;
+            case 'register':
+                handleRegister(new Event('submit') as unknown as React.FormEvent);
+                break;
+            case 'reset':
+                handleResetPassword(new Event('submit') as unknown as React.FormEvent);
+                break;
+            case 'sendCode':
+                proceedWithSendCode(captchaInfoForTurnstile, token);
+                break;
+        }
+
+        // 重置
         setCaptchaInfoForTurnstile(null);
-        // 关键修复：在处理完token后，立即重置Turnstile小部件以防止循环
-        sendCodeTurnstileRef.current?.reset();
+        setCurrentAction(null);
+        turnstileRef.current?.reset();
     };
 
     // 触发发送邮件的最终逻辑 (仅用于无验证码的场景)
     const triggerSendCodeAction = () => {
         if (systemConfig?.enable_turnstile && systemConfig.turnstile_site_key) {
             setCaptchaInfoForTurnstile(null); // 确保没有旧的验证码信息
-            sendCodeTurnstileRef.current?.execute();
+            setCurrentAction('sendCode');
+            turnstileRef.current?.execute();
         } else {
             proceedWithSendCode(null);
         }
@@ -239,6 +258,14 @@ export default function LoginPage() {
             });
             return;
         }
+
+        // Turnstile 流程
+        if (systemConfig?.enable_turnstile && !turnstileTokenRef.current) {
+            setCurrentAction('login');
+            turnstileRef.current?.execute();
+            return; // 等待 onVerify 回调
+        }
+
         setLoading(true);
 
         try {
@@ -246,9 +273,9 @@ export default function LoginPage() {
             formData.append('username', username);
             formData.append('password', password);
 
-            // 添加Turnstile token
             if (systemConfig?.enable_turnstile) {
-                formData.append('turnstile_token', turnstileToken);
+                formData.append('turnstile_token', turnstileTokenRef.current);
+                turnstileTokenRef.current = ''; // 使用后立即清空
             }
 
             const response = await apiClient.post(`/auth/login/access-token`, formData);
@@ -276,19 +303,17 @@ export default function LoginPage() {
     // 注册
     const handleRegister = async (e: React.FormEvent) => {
         e.preventDefault();
+        
+        // Turnstile 流程
+        if (systemConfig?.enable_turnstile && !turnstileTokenRef.current) {
+            setCurrentAction('register');
+            turnstileRef.current?.execute();
+            return; // 等待 onVerify 回调
+        }
+        
         setLoading(true);
 
         try {
-            // Turnstile验证检查
-            if (systemConfig?.enable_turnstile && !turnstileToken) {
-                toast({
-                    variant: 'error',
-                    title: '请完成人机验证',
-                });
-                setLoading(false);
-                return;
-            }
-
             // 先验证验证码（如果有输入）
             if (verificationCode) {
                 const isValid = await verifyCode();
@@ -305,9 +330,9 @@ export default function LoginPage() {
                 password
             };
 
-            // 添加Turnstile token（如果启用）
-            if (systemConfig?.enable_turnstile && turnstileToken) {
-                registerData.turnstile_token = turnstileToken;
+            if (systemConfig?.enable_turnstile) {
+                registerData.turnstile_token = turnstileTokenRef.current;
+                turnstileTokenRef.current = ''; // 使用后立即清空
             }
 
             await apiClient.post(`/users/open`, registerData);
@@ -322,7 +347,6 @@ export default function LoginPage() {
             setIsLogin(true);
             setIsResetPassword(false);
             setVerificationCode('');
-            setTurnstileToken('');
         } catch (error: any) {
             toast({
                 variant: 'error',
@@ -337,6 +361,14 @@ export default function LoginPage() {
     // 重置密码
     const handleResetPassword = async (e: React.FormEvent) => {
         e.preventDefault();
+
+        // Turnstile 流程
+        if (systemConfig?.enable_turnstile && !turnstileTokenRef.current) {
+            setCurrentAction('reset');
+            turnstileRef.current?.execute();
+            return; // 等待 onVerify 回调
+        }
+        
         setLoading(true);
 
         try {
@@ -358,9 +390,9 @@ export default function LoginPage() {
                 new_password: password
             };
 
-            // 添加Turnstile token
             if (systemConfig?.enable_turnstile) {
-                resetData.turnstile_token = turnstileToken;
+                resetData.turnstile_token = turnstileTokenRef.current;
+                turnstileTokenRef.current = ''; // 使用后立即清空
             }
 
             await apiClient.post(`/auth/reset-password`, resetData);
@@ -397,12 +429,11 @@ export default function LoginPage() {
             />
             {systemConfig?.enable_turnstile && systemConfig.turnstile_site_key && (
                 <TurnstileWidget
-                    ref={sendCodeTurnstileRef}
+                    ref={turnstileRef}
                     siteKey={systemConfig.turnstile_site_key}
                     onVerify={handleTurnstileVerify}
                     onError={() => toast({ variant: 'error', title: '人机验证失败，请刷新重试' })}
                     appearance="interaction-only"
-                    className="hidden"
                 />
             )}
             <div className="bg-card border rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
@@ -508,13 +539,6 @@ export default function LoginPage() {
 
                             {/* Turnstile 人机验证 */}
                             {/* Turnstile 人机验证 */}
-                            {systemConfig?.enable_turnstile && systemConfig?.turnstile_site_key && (
-                                <TurnstileWidget
-                                    siteKey={systemConfig.turnstile_site_key}
-                                    onVerify={(token) => setTurnstileToken(token)}
-                                    onError={() => toast({ variant: 'error', title: '人机验证失败，请刷新重试' })}
-                                />
-                            )}
 
                             <Button type="submit" className="w-full" disabled={loading}>
                                 {loading ? '登录中...' : '登录'}
@@ -624,14 +648,6 @@ export default function LoginPage() {
                                 </div>
                             </div>
 
-                            {/* Turnstile 人机验证 */}
-                            {systemConfig?.enable_turnstile && systemConfig?.turnstile_site_key && (
-                                <TurnstileWidget
-                                    siteKey={systemConfig.turnstile_site_key}
-                                    onVerify={(token) => setTurnstileToken(token)}
-                                    onError={() => toast({ variant: 'error', title: '人机验证失败，请刷新重试' })}
-                                />
-                            )}
                             
                             <Button type="submit" className="w-full" disabled={loading}>
                                  {loading ? '重置中...' : '重置密码'}
@@ -755,14 +771,6 @@ export default function LoginPage() {
                                     </div>
                                 </div>
 
-                                {/* Turnstile 人机验证 */}
-                                {systemConfig?.enable_turnstile && systemConfig?.turnstile_site_key && (
-                                    <TurnstileWidget
-                                        siteKey={systemConfig.turnstile_site_key}
-                                        onVerify={(token) => setTurnstileToken(token)}
-                                        onError={() => toast({ variant: 'error', title: '人机验证失败，请刷新重试' })}
-                                    />
-                                )}
 
                                 <Button type="submit" className="w-full" disabled={loading}>
                                     {loading ? '注册中...' : '注册'}
