@@ -44,6 +44,9 @@ COPY alembic ./alembic
 COPY alembic.ini .
 COPY migrate.py .
 
+# 复制启动脚本
+COPY run.py .
+
 # 复制前端构建产物到静态文件目录
 COPY --from=frontend-builder /app/dist ./static
 
@@ -65,4 +68,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/ || exit 1
 
 # 启动命令
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 启动命令
+CMD ["python", "run.py"]

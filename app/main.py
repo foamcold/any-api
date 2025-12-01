@@ -93,11 +93,6 @@ app.include_router(universal_routes.router)
 # 5. Generic Proxy (Catch-all) - 最后匹配
 app.include_router(generic_proxy.router, tags=["generic_proxy"])
 
-# 在 uvicorn CLI 启动时,将配置设置为环境变量,使其能够读取
-import os
-os.environ.setdefault('HOST', str(settings.HOST))
-os.environ.setdefault('PORT', str(settings.PORT))
-
 
 @app.get("/")
 async def root():

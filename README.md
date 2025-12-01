@@ -102,7 +102,8 @@ npm run build  # 生产环境构建
 
 ```bash
 # 启动后端
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+# 使用项目提供的脚本启动后端服务
+python run.py
 
 # 开发模式（前端热重载）
 # npm run dev
@@ -280,7 +281,8 @@ any-api/
 pip install -r requirements.txt
 
 # 运行开发服务器（自动重载）
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# 开发时，可以编辑 run.py 文件，在 uvicorn.run() 中加入 reload=True
+python run.py
 ```
 
 ### 前端开发
