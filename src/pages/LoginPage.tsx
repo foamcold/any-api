@@ -79,6 +79,23 @@ export default function LoginPage() {
         }
     }, [systemConfig]);
 
+    // 使用 useEffect 动态移动 Turnstile 组件
+    useEffect(() => {
+        // 确保 Turnstile 已启用且 DOM 已准备好
+        if (systemConfig?.enable_turnstile && systemConfig.turnstile_site_key) {
+            const turnstileElement = document.getElementById('turnstile-widget-wrapper');
+            const container = document.getElementById('turnstile-container');
+
+            if (turnstileElement && container) {
+                // 将 Turnstile 元素移动到当前活动的表单容器中
+                container.appendChild(turnstileElement);
+                // 确保它是可见的
+                turnstileElement.style.position = 'static';
+                turnstileElement.style.opacity = '1';
+            }
+        }
+    }, [isLogin, isResetPassword, systemConfig]); // 当表单切换时重新执行
+
     // 发送验证码
     const proceedWithSendCode = async (captchaInfo: { captchaId: string, captchaCode: string } | null, token?: string) => {
         // 最终防线：在发送请求的函数本身进行检查，确保万无一失
@@ -420,24 +437,6 @@ export default function LoginPage() {
         }
     };
 
-    // 可重用的人机验证组件
-    const TurnstileComponent = () => {
-        if (!systemConfig?.enable_turnstile || !systemConfig.turnstile_site_key) {
-            return null;
-        }
-        return (
-            <div className="flex justify-center my-4">
-                <TurnstileWidget
-                    ref={turnstileRef}
-                    siteKey={systemConfig.turnstile_site_key}
-                    onVerify={handleTurnstileVerify}
-                    onError={() => toast({ variant: 'error', title: '人机验证失败，请刷新重试' })}
-                    appearance="always" // 保持可见
-                />
-            </div>
-        );
-    };
-
     return (
         <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary/10 via-background to-secondary/10 p-4">
             <CaptchaDialog
@@ -445,7 +444,19 @@ export default function LoginPage() {
                 onOpenChange={setIsCaptchaDialogOpen}
                 onSuccess={onCaptchaSuccess}
             />
-            {/* Turnstile 组件现在将在下面的表单中被调用 */}
+
+            {/* 单一的、全局的 Turnstile 实例，初始时隐藏 */}
+            {systemConfig?.enable_turnstile && systemConfig.turnstile_site_key && (
+                <div id="turnstile-widget-wrapper" style={{ position: 'absolute', opacity: 0, zIndex: -1 }}>
+                    <TurnstileWidget
+                        ref={turnstileRef}
+                        siteKey={systemConfig.turnstile_site_key}
+                        onVerify={handleTurnstileVerify}
+                        onError={() => toast({ variant: 'error', title: '人机验证失败，请刷新重试' })}
+                    />
+                </div>
+            )}
+            
             <div className="bg-card border rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
                 {/* 标题区域 */}
                 <div className="bg-gradient-to-r from-primary to-primary/80 text-primary-foreground p-8 text-center">
@@ -548,7 +559,8 @@ export default function LoginPage() {
                             </div>
 
                             {/* Turnstile 人机验证 */}
-                            <TurnstileComponent />
+                            {/* Turnstile 占位符 */}
+                            <div id="turnstile-container" className="my-4 flex justify-center"></div>
 
                             <Button type="submit" className="w-full" disabled={loading}>
                                 {loading ? '登录中...' : '登录'}
@@ -660,7 +672,8 @@ export default function LoginPage() {
 
                             
                             {/* Turnstile 人机验证 */}
-                            <TurnstileComponent />
+                            {/* Turnstile 占位符 */}
+                            <div id="turnstile-container" className="my-4 flex justify-center"></div>
                             
                             <Button type="submit" className="w-full" disabled={loading}>
                                  {loading ? '重置中...' : '重置密码'}
@@ -786,7 +799,8 @@ export default function LoginPage() {
 
 
                                 {/* Turnstile 人机验证 */}
-                                <TurnstileComponent />
+                                {/* Turnstile 占位符 */}
+                                <div id="turnstile-container" className="my-4 flex justify-center"></div>
 
                                 <Button type="submit" className="w-full" disabled={loading}>
                                     {loading ? '注册中...' : '注册'}
