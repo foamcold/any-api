@@ -80,6 +80,13 @@ export default function LoginPage() {
 
     // 发送验证码
     const proceedWithSendCode = async (captchaInfo: { captchaId: string, captchaCode: string } | null, token?: string) => {
+        // 最终防线：在发送请求的函数本身进行检查，确保万无一失
+        if (!systemConfig?.require_email_verification) {
+            // 此处不需要toast，因为上游的handleSendCode已经提示过了
+            // 如果是自动触发，静默失败即可
+            return;
+        }
+
         // 立即启动倒计时
         setCountdown(60);
         const timer = setInterval(() => {
@@ -178,6 +185,13 @@ export default function LoginPage() {
 
     // 当 Turnstile 验证成功后调用此函数
     const handleTurnstileVerify = (token: string) => {
+        // 关键修复：在这里也添加检查，防止绕过 handleSendCode 的直接调用
+        if (!systemConfig?.require_email_verification) {
+            // 在这里可以选择静默失败或给出提示
+            // 为避免干扰用户，选择静默处理并重置
+            sendCodeTurnstileRef.current?.reset();
+            return;
+        }
         proceedWithSendCode(captchaInfoForTurnstile, token);
         // 重置临时状态
         setCaptchaInfoForTurnstile(null);
