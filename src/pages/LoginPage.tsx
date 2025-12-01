@@ -74,8 +74,6 @@ export default function LoginPage() {
             if (!systemConfig.allow_password_login && !systemConfig.allow_registration && systemConfig.require_email_verification) {
                 setIsLogin(false);
                 setIsResetPassword(true);
-            } else if (!systemConfig.allow_password_login) {
-                setIsLogin(false);
             }
         }
     }, [systemConfig]);
@@ -207,6 +205,14 @@ export default function LoginPage() {
     // 登录
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!systemConfig?.allow_password_login) {
+            toast({
+                variant: 'error',
+                title: '登录已禁用',
+                description: '管理员已关闭密码登录功能。',
+            });
+            return;
+        }
         setLoading(true);
 
         try {
@@ -386,21 +392,27 @@ export default function LoginPage() {
                 <div className="p-8">
                     {/* 切换标签 */}
                     <div className="flex rounded-lg border p-1 mb-6">
-                        {systemConfig?.allow_password_login && (
-                            <button
-                                type="button"
-                                onClick={() => {
+                        <button
+                            type="button"
+                            onClick={() => {
+                                if (systemConfig?.allow_password_login) {
                                     setIsLogin(true);
                                     setIsResetPassword(false);
-                                }}
-                                className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${isLogin && !isResetPassword
-                                    ? 'bg-primary text-primary-foreground'
-                                    : 'text-muted-foreground hover:text-foreground'
-                                    }`}
-                            >
-                                登录
-                            </button>
-                        )}
+                                } else {
+                                    toast({
+                                        variant: 'error',
+                                        title: '登录已禁用',
+                                        description: '管理员已关闭密码登录功能。',
+                                    });
+                                }
+                            }}
+                            className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${isLogin && !isResetPassword
+                                ? 'bg-primary text-primary-foreground'
+                                : 'text-muted-foreground hover:text-foreground'
+                                }`}
+                        >
+                            登录
+                        </button>
                         {systemConfig?.allow_registration && (
                             <button
                                 type="button"
@@ -435,10 +447,9 @@ export default function LoginPage() {
 
                     {/* 登录表单 */}
                     {isLogin && !isResetPassword ? (
-                        systemConfig?.allow_password_login ? (
-                            <form onSubmit={handleLogin} className="space-y-4">
-                                <div className="space-y-2">
-                                    <Label htmlFor="login-username">用户名或邮箱</Label>
+                        <form onSubmit={handleLogin} className="space-y-4">
+                            <div className="space-y-2">
+                                <Label htmlFor="login-username">用户名或邮箱</Label>
                                     <div className="relative">
                                         <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                                         <Input
@@ -483,12 +494,7 @@ export default function LoginPage() {
                                     {loading ? '登录中...' : '登录'}
                                  </Button>
                             </form>
-                        ) : (
-                            <div className="text-center text-muted-foreground">
-                                <p>密码登录已关闭。</p>
-                                <p>管理员仍可通过密码登录。</p>
-                            </div>
-                        )
+                        </form>
                     ) : isResetPassword ? (
                         /* 重置密码表单 */
                         <form onSubmit={handleResetPassword} className="space-y-4">
