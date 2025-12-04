@@ -4,6 +4,11 @@ import httpx
 import logging
 from typing import AsyncGenerator, Tuple, List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import Request, BackgroundTasks
+import traceback
+import datetime
+import asyncio
+from sqlalchemy.future import select
 
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
 from app.services.universal_converter import universal_converter, ApiFormat
@@ -19,12 +24,6 @@ from app.models.preset_regex import PresetRegexRule
 from app.models.log import Log
 from app.models.key import count_tokens_for_messages, get_tokenizer
 from app.core.config import settings
-from sqlalchemy.future import select
-from fastapi import Request, BackgroundTasks
-import traceback
-
-import datetime
-import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -356,10 +355,6 @@ class ChatProcessor:
         logger.debug(f"返回给调用者的内部响应体: {json.dumps(internal_response, indent=2, ensure_ascii=False)}")
         return internal_response, 200, "openai" # Return internal format
 
-    # This function is no longer needed as the logic is now inside process_request
-    # async def _logged_stream_generator(...):
-
-
     async def stream_chat_completion(
         self, payload: Dict, upstream_format: ApiFormat, original_format: ApiFormat, model: str,
         official_key: OfficialKey, global_rules: List, local_rules: List
@@ -424,7 +419,7 @@ class ChatProcessor:
                             # 兼容 SSE "data: " 前缀
                             if potential_json.startswith('data:'):
                                 potential_json = potential_json[5:].strip()
-                            
+
                             # 处理 SSE "event: " 行 (Claude 等)
                             if "event: " in potential_json:
                                 lines = potential_json.split('\n')
@@ -443,18 +438,20 @@ class ChatProcessor:
                                          buffer = ""
                                          continue
 
+                            # 针对 JSON 数组流 (如 Gemini) 的特殊处理
+                            while potential_json and (potential_json.startswith('[') or potential_json.startswith(',')):
+                                potential_json = potential_json[1:].strip()
+                            
+                            while potential_json and (potential_json.endswith(']') or potential_json.endswith(',')):
+                                potential_json = potential_json[:-1].strip()
+
                             if not potential_json or potential_json == '[DONE]':
                                 buffer = ""
                                 continue
 
                             try:
                                 upstream_chunks = []
-                                # Gemini 流可能会返回一个JSON数组
-                                if potential_json.startswith('[') and potential_json.endswith(']'):
-                                    parsed_data = json.loads(potential_json)
-                                    upstream_chunks.extend(parsed_data)
-                                else:
-                                    upstream_chunks.append(json.loads(potential_json))
+                                upstream_chunks.append(json.loads(potential_json))
 
                                 for upstream_chunk in upstream_chunks:
                                     # 1. 转换为内部格式 (OpenAI)
