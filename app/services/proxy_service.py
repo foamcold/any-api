@@ -91,13 +91,13 @@ class ProxyService:
             db.add(log_entry)
 
             # 2. Update Key Stats
-            key_obj.usage_count += 1
+            key_obj.usage_count = (key_obj.usage_count or 0) + 1
             key_obj.input_tokens = (key_obj.input_tokens or 0) + (log_entry.input_tokens or 0)
             key_obj.output_tokens = (key_obj.output_tokens or 0) + output_tokens
             key_obj.last_status_code = numeric_status_code
             
             if log_entry.status == "error":
-                key_obj.error_count += 1
+                key_obj.error_count = (key_obj.error_count or 0) + 1
                 key_obj.last_status = str(numeric_status_code)
             else:
                 key_obj.last_status = "active"
@@ -643,8 +643,13 @@ class ProxyService:
         brace_counter = 0
         in_string = False
         try:
-            async for raw_chunk in response.aiter_raw():
-                decoded_chunk = raw_chunk.decode('utf-8')
+            async for raw_chunk in response.aiter_bytes():
+                try:
+                    decoded_chunk = raw_chunk.decode('utf-8')
+                except UnicodeDecodeError:
+                    # 如果解码失败，可能是一个无法转换为文本的特殊块（例如，在某些实现中），记录并跳过
+                    logger.warning(f"[Proxy] Stream chunk could not be decoded to UTF-8, skipping. Chunk: {raw_chunk!r}")
+                    continue
                 for char in decoded_chunk:
                     buffer += char
                     if char == '"' and (len(buffer) == 1 or buffer[-2] != '\\'):
@@ -678,7 +683,7 @@ class ProxyService:
                                 )
                                 if converted_chunk:
                                     logger.debug(f"[Proxy] 准备发送给客户端的最终块: {json.dumps(converted_chunk, indent=2, ensure_ascii=False)}")
-                                    yield f"data: {json.dumps(converted_chunk)}\n\n"
+                                    yield f"data: {json.dumps(converted_chunk)}\n\n".encode("utf-8")
                                 else:
                                     logger.debug("[Proxy] 转换后的块为空，跳过")
                             
@@ -687,19 +692,19 @@ class ProxyService:
                             logger.debug(f"[Proxy] 缓冲区JSON不完整，继续缓冲: '{buffer}'")
                             pass
             
-            yield "data: [DONE]\n\n"
+            yield b"data: [DONE]\n\n"
         except httpx.RequestError as e:
             logger.error(f"[Proxy] Stream conversion request failed: {e}", exc_info=True)
             error_message = f"无法连接到上游服务: {type(e).__name__}"
             openai_error = ErrorConverter.convert_upstream_error(error_message.encode('utf-8'), 502, "openai", to_format)
-            yield f"data: {json.dumps(openai_error)}\n\n"
+            yield f"data: {json.dumps(openai_error, default=str)}\n\n".encode("utf-8")
             yield b"data: [DONE]\n\n"
         except Exception as e:
             logger.error(f"[Proxy] Stream conversion error: {e}", exc_info=True)
             # Yield a generic error in the stream
             error_message = f"流转换中发生内部错误: {str(e)}"
             openai_error = ErrorConverter.convert_upstream_error(error_message.encode('utf-8'), 500, "openai", to_format)
-            yield f"data: {json.dumps(openai_error)}\n\n"
+            yield f"data: {json.dumps(openai_error, default=str)}\n\n".encode("utf-8")
             yield b"data: [DONE]\n\n"
         finally:
             await response.aclose()
