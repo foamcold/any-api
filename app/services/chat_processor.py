@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
 from app.services.universal_converter import universal_converter, ApiFormat
+from app.services.gemini_safety_service import gemini_safety_service
 from app.core.errors import ErrorConverter
 from app.services.variable_service import variable_service
 from app.services.regex_service import regex_service
@@ -274,6 +275,9 @@ class ChatProcessor:
         self, payload: Dict, upstream_format: ApiFormat, original_format: ApiFormat, model: str,
         official_key: OfficialKey, global_rules: List, local_rules: List
     ) -> Tuple[Dict, int, ApiFormat]:
+        if upstream_format == "gemini":
+            payload = gemini_safety_service.add_safety_settings_to_payload(payload)
+
         # 动态构建请求
         base_url = ""
         if upstream_format == "gemini":
@@ -334,6 +338,9 @@ class ChatProcessor:
         self, payload: Dict, upstream_format: ApiFormat, original_format: ApiFormat, model: str,
         official_key: OfficialKey, global_rules: List, local_rules: List
     ) -> AsyncGenerator[bytes, None]:
+        if upstream_format == "gemini":
+            payload = gemini_safety_service.add_safety_settings_to_payload(payload)
+            
         # 动态构建请求
         base_url = ""
         if upstream_format == "gemini":

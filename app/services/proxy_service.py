@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.errors import ErrorConverter
 from app.services.universal_converter import universal_converter
+from app.services.gemini_safety_service import gemini_safety_service
 from app.services.gemini_service import gemini_service
 from app.services.claude_service import claude_service
 from app.models.key import OfficialKey
@@ -325,6 +326,11 @@ class ProxyService:
 
         # 2. 转换请求体 (Incoming -> Target)
         converted_body, _ = await universal_converter.convert_request(body, target_provider, request)
+        
+        # 如果目标是 Gemini，则添加默认的安全设置
+        if target_provider == "gemini":
+            converted_body = gemini_safety_service.add_safety_settings_to_payload(converted_body)
+            
         logger.debug(f"[Proxy] 发送到上游的最终请求体: {json.dumps(converted_body, indent=2, ensure_ascii=False)}")
         
         # 3. 确定目标 URL 和 Method
