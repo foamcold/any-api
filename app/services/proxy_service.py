@@ -608,7 +608,7 @@ class ProxyService:
             # 对于 OpenAI，我们可能没有持久化的全局 client，或者可以使用一个
             return httpx.AsyncClient(timeout=60.0)
 
-    async def get_and_transform_models(self, db: AsyncSession, official_key: OfficialKey, target_format: str = "openai"):
+    async def get_and_transform_models(self, request: Request, db: AsyncSession, official_key: OfficialKey, target_format: str = "openai"):
         """
         获取、转换并根据配置添加伪流模型。
         这是一个集中的、格式感知的服务，用于处理所有模型列表请求。
@@ -618,13 +618,16 @@ class ProxyService:
         system_config = result.scalars().first()
         pseudo_streaming_enabled = system_config.pseudo_streaming_enabled if system_config else True
 
-        # 2. 代理到上游 API
+        # 2. 代理到上游 API，并保留客户端的查询参数（如 pageToken）
+        client_params = dict(request.query_params)
+        upstream_params = {**client_params, "key": official_key.key}
+
         async with httpx.AsyncClient() as client:
             try:
                 # 未来可以根据 official_key.channel.type 动态化
                 response = await client.get(
                     "https://generativelanguage.googleapis.com/v1beta/models",
-                    params={"key": official_key.key}
+                    params=upstream_params
                 )
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
