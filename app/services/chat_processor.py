@@ -229,28 +229,30 @@ class ChatProcessor:
             await db.commit()
             logger.info(f"[ChatProcessor] 日志已归档，Key 统计已更新 (Official Key ID {official_key.id})")
 
-        except PendingRollbackError as e:
-            # 当事务因客户端取消等原因回滚时，会触发此异常。
-            # 我们先回滚以清理会话，然后重新尝试提交日志。
+        except (PendingRollbackError, OperationalError) as e:
             key_id = log_entry.official_key_id if log_entry else 'N/A'
-            logger.warning(f"[ChatProcessor] 检测到待回滚的事务，可能是由客户端断开连接引起。正在尝试恢复日志记录 (Official Key ID: {key_id})")
-            await db.rollback()
-            try:
-                # 重新设置日志状态为错误，因为原始事务失败了
-                log_entry.status = "error"
-                log_entry.status_code = 499 # Client Closed Request
-                db.add(log_entry)
-                # Key的统计信息可能不完整，但我们至少记录这次请求
-                await db.commit()
-                logger.info(f"[ChatProcessor] 成功恢复并记录了客户端断开连接的日志 (Official Key ID: {key_id})")
-            except Exception as retry_e:
-                logger.error(f"[ChatProcessor] 恢复日志记录失败 (Official Key ID: {key_id})。错误: {retry_e}", exc_info=True)
-                await db.rollback()
+            if "no active connection" in str(e):
+                logger.error(f"[ChatProcessor] 数据库连接已失效，无法完成日志记录 (Official Key ID: {key_id})。错误: {e}", exc_info=False)
+                # 不再尝试 rollback，因为连接已死
+            else:
+                logger.warning(f"[ChatProcessor] 检测到数据库事务问题（可能是客户端断开），正在尝试恢复日志... (Official Key ID: {key_id})")
+                try:
+                    await db.rollback()
+                    log_entry.status = "error"
+                    log_entry.status_code = 499 # Client Closed Request
+                    db.add(log_entry)
+                    await db.commit()
+                    logger.info(f"[ChatProcessor] 成功恢复并记录了中断的请求日志 (Official Key ID: {key_id})")
+                except Exception as retry_e:
+                    logger.error(f"[ChatProcessor] 恢复日志记录失败 (Official Key ID: {key_id})。错误: {retry_e}", exc_info=True)
+                    await db.rollback() # 最后的尝试
         except Exception as e:
-            # 捕获所有其他异常
             key_id = log_entry.official_key_id if log_entry else 'N/A'
-            logger.error(f"[ChatProcessor] 归档日志或更新 Key 统计时发生未知错误 (Official Key ID: {key_id})。错误: {e}", exc_info=True)
-            await db.rollback()
+            logger.error(f"[ChatProcessor] 归档日志时发生未知错误 (Official Key ID: {key_id})。错误: {e}", exc_info=True)
+            try:
+                await db.rollback()
+            except Exception as rollback_e:
+                logger.error(f"[ChatProcessor] 在未知错误后，回滚事务也失败了 (Official Key ID: {key_id})。回滚错误: {rollback_e}", exc_info=True)
 
     async def non_stream_chat_completion(
         self, payload: Dict, upstream_format: ApiFormat, original_format: ApiFormat, model: str,
