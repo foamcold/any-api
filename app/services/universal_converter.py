@@ -137,6 +137,38 @@ class UniversalConverter:
         
         return final_chunk, is_done
 
+    def convert_response(self, response: Dict[str, Any], to_format: ApiFormat, from_format: ApiFormat, model: str) -> Tuple[Dict[str, Any], ApiFormat]:
+        """
+        将响应体从一种格式转换为另一种格式。
+        """
+        # 如果来源和目标格式相同，直接返回
+        if from_format == to_format:
+            return response, from_format
+
+        # 1. 从源格式转换到 OpenAI 格式 (作为中间格式)
+        openai_response = response
+        if from_format != "openai":
+            converter_func = getattr(self, f"{from_format}_response_to_openai_response", None)
+            if callable(converter_func):
+                openai_response = converter_func(response, model)
+            else:
+                # 如果没有特定的转换器，抛出未实现错误
+                raise NotImplementedError(f"从 {from_format} 响应到 openai 响应的转换未实现")
+
+        # 如果目标就是 OpenAI，直接返回
+        if to_format == "openai":
+            return openai_response, from_format
+
+        # 2. 从 OpenAI 格式转换到目标格式
+        final_response = openai_response
+        converter_func = getattr(self, f"openai_response_to_{to_format}_response", None)
+        if callable(converter_func):
+            final_response = converter_func(openai_response)
+        else:
+            raise NotImplementedError(f"从 openai 响应到 {to_format} 响应的转换未实现")
+        
+        return final_response, from_format
+
     # --- OpenAI <-> Gemini ---
     
     def gemini_request_to_openai_request(self, body: Dict[str, Any], request: Request = None) -> Dict[str, Any]:
@@ -286,63 +318,67 @@ class UniversalConverter:
         return payload
 
     def gemini_response_to_openai_response(self, response: Dict[str, Any], model: str) -> Dict[str, Any]:
-        """将Gemini响应转换为OpenAI响应"""
+        """将Gemini响应转换为OpenAI响应 (已加固)"""
         choices = []
-        if "candidates" in response:
-            for i, candidate in enumerate(response["candidates"]):
-                message = {"role": "assistant", "content": None}
-                finish_reason = "stop"
+        candidates = response.get("candidates", [])
+        
+        for i, candidate in enumerate(candidates):
+            message = {"role": "assistant", "content": None}
+            finish_reason = "stop"
+            
+            content = candidate.get("content", {})
+            parts = content.get("parts", [])
+            
+            content_str = ""
+            tool_calls = []
+            
+            for part in parts:
+                is_thought = part.get("thought", False)
                 
-                if "content" in candidate and "parts" in candidate["content"]:
-                    content_str = ""
-                    tool_calls = []
-                    
-                    for part in candidate["content"]["parts"]:
-                        # 优先检查 thought 标记 (new-api 风格: thought 是 bool, text 是内容)
-                        is_thought = part.get("thought", False)
-                        
-                        if "text" in part:
-                            if is_thought:
-                                if "reasoning_content" not in message:
-                                    message["reasoning_content"] = ""
-                                message["reasoning_content"] += part["text"]
-                            else:
-                                content_str += part["text"]
-                        elif "thought" in part and isinstance(part["thought"], str):
-                            # 兼容旧逻辑或非标准格式，如果 thought 本身是字符串内容
-                            if "reasoning_content" not in message:
-                                message["reasoning_content"] = ""
-                            message["reasoning_content"] += part["thought"]
-                        
-                        if "functionCall" in part:
-                            fc = part["functionCall"]
-                            tool_calls.append({
-                                "id": f"call_{uuid.uuid4().hex[:8]}",
-                                "type": "function",
-                                "function": {
-                                    "name": fc["name"],
-                                    "arguments": json.dumps(fc["args"])
-                                }
-                            })
-                    
-                    if content_str:
-                        message["content"] = content_str
-                    elif message["content"] is None and ("reasoning_content" in message or tool_calls):
-                        # 如果只有思考内容或工具调用，确保 content 不为 None，避免客户端报错
-                        message["content"] = ""
+                if "text" in part:
+                    text_value = part.get("text", "")
+                    if is_thought:
+                        message.setdefault("reasoning_content", "")
+                        message["reasoning_content"] += text_value
+                    else:
+                        content_str += text_value
+                elif "thought" in part and isinstance(part["thought"], str):
+                    message.setdefault("reasoning_content", "")
+                    message["reasoning_content"] += part["thought"]
+                
+                if "functionCall" in part:
+                    fc = part.get("functionCall", {})
+                    # 确保 fc, name, args 存在
+                    if fc and "name" in fc and "args" in fc:
+                        tool_calls.append({
+                            "id": f"call_{uuid.uuid4().hex[:8]}",
+                            "type": "function",
+                            "function": {
+                                "name": fc.get("name"),
+                                "arguments": json.dumps(fc.get("args", {}))
+                            }
+                        })
+            
+            if content_str:
+                message["content"] = content_str
+            elif message["content"] is None and ("reasoning_content" in message or tool_calls):
+                message["content"] = ""
 
-                    if tool_calls:
-                        message["tool_calls"] = tool_calls
-                        finish_reason = "tool_calls"
-                
-                if candidate.get("finishReason") == "MAX_TOKENS":
-                    finish_reason = "length"
-                
-                choices.append({
-                    "index": i,
-                    "message": message,
-                    "finish_reason": finish_reason
-                })
+            if tool_calls:
+                message["tool_calls"] = tool_calls
+                finish_reason = "tool_calls"
+            
+            candidate_finish_reason = candidate.get("finishReason")
+            if candidate_finish_reason == "MAX_TOKENS":
+                finish_reason = "length"
+            elif candidate_finish_reason: # 其他原因也映射一下
+                finish_reason = candidate_finish_reason.lower()
+
+            choices.append({
+                "index": i,
+                "message": message,
+                "finish_reason": finish_reason
+            })
         
         usage = response.get("usageMetadata", {})
         return {
@@ -486,6 +522,58 @@ class UniversalConverter:
                 "total_tokens": 0,
             }
         }
+
+    def openai_response_to_claude_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        """将OpenAI响应转换为Claude响应"""
+        # OpenAI Response: {"id":..., "choices":[{"message":{"content":...}}], ...}
+        # Claude Response: {"id":..., "type":"message", "role":"assistant", "content":[{"type":"text", "text":...}], "model":...}
+        claude_response = {
+            "id": response.get("id", f"msg-claude-{uuid.uuid4()}"),
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "model": response.get("model", ""),
+            "stop_reason": None,
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": response.get("usage", {}).get("prompt_tokens", 0),
+                "output_tokens": response.get("usage", {}).get("completion_tokens", 0)
+            }
+        }
+        
+        choices = response.get("choices", [])
+        if not choices:
+            return claude_response
+
+        choice = choices[0]
+        message = choice.get("message", {})
+        
+        # 转换 content 和 tool_calls
+        content = message.get("content")
+        if content:
+            claude_response["content"].append({"type": "text", "text": content})
+            
+        tool_calls = message.get("tool_calls", [])
+        for tool_call in tool_calls:
+            if tool_call.get("type") == "function":
+                function = tool_call.get("function", {})
+                claude_response["content"].append({
+                    "type": "tool_use",
+                    "id": tool_call.get("id"),
+                    "name": function.get("name"),
+                    "input": json.loads(function.get("arguments", "{}"))
+                })
+        
+        # 转换 finish_reason
+        finish_reason = choice.get("finish_reason")
+        if finish_reason == "stop":
+            claude_response["stop_reason"] = "end_turn"
+        elif finish_reason == "length":
+            claude_response["stop_reason"] = "max_tokens"
+        elif finish_reason == "tool_calls":
+             claude_response["stop_reason"] = "tool_use"
+
+        return claude_response
         
     # --- 流式和错误处理辅助函数 ---
     def gemini_to_openai_chunk(self, response: Dict[str, Any], model: str) -> Dict[str, Any]:
@@ -679,6 +767,71 @@ class UniversalConverter:
         # 因为它们不直接产生给客户端的内容。返回一个空字典表示这个chunk不生成输出。
         return {}
         
+    def openai_chunk_to_claude_chunk(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
+        """将OpenAI流式块转换为Claude格式"""
+        choices = chunk.get("choices")
+        if not choices:
+            return {}
+
+        choice = choices[0]
+        delta = choice.get("delta", {})
+        
+        # 事件1: message_start (通常在第一个块)
+        if "role" in delta:
+            return {
+                "type": "message_start",
+                "message": {
+                    "id": chunk.get("id", f"msg-claude-{uuid.uuid4()}"),
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": chunk.get("model", ""),
+                    "usage": {}
+                }
+            }
+
+        # 事件2: content_block_delta (内容块)
+        if "content" in delta and delta["content"]:
+            return {
+                "type": "content_block_delta",
+                "index": 0, # 假设只有一个内容块
+                "delta": {"type": "text_delta", "text": delta["content"]}
+            }
+            
+        # 事件3: tool_calls (工具调用块)
+        if "tool_calls" in delta:
+             tool_calls = delta.get("tool_calls", [])
+             if not tool_calls: return {}
+             tool_call = tool_calls[0] # 假设每次只来一个
+             function = tool_call.get("function", {})
+             
+             # Claude流式工具调用分为 start 和 delta
+             # 为简化，我们只发送一个完整的 tool_use 块
+             return {
+                "type": "content_block_start",
+                "index": tool_call.get("index", 1),
+                "content_block": {
+                    "type": "tool_use",
+                    "id": tool_call.get("id"),
+                    "name": function.get("name"),
+                    "input": json.loads(function.get("arguments", "{}"))
+                }
+            }
+
+        # 事件4: message_delta (结束原因)
+        finish_reason = choice.get("finish_reason")
+        if finish_reason:
+            stop_reason = "end_turn"
+            if finish_reason == "length": stop_reason = "max_tokens"
+            elif finish_reason == "tool_calls": stop_reason = "tool_use"
+            
+            return {
+                "type": "message_delta",
+                "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+                "usage": {"output_tokens": 0} # 简化，不在每个块都计算
+            }
+
+        return {}
 
 # 创建单例
 universal_converter = UniversalConverter()

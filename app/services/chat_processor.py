@@ -3,6 +3,7 @@ import time
 import httpx
 import logging
 from typing import AsyncGenerator, Tuple, List, Dict, Any, Optional
+from sqlalchemy.exc import PendingRollbackError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
@@ -228,6 +229,18 @@ class ChatProcessor:
             await db.commit()
             logger.info(f"[ChatProcessor] 日志已归档，Key 统计已更新 (Official Key ID {official_key.id})")
 
+        except PendingRollbackError:
+            logger.warning(f"[ChatProcessor] 检测到事务回滚，正在尝试重新提交日志 (Official Key ID: {official_key.id})")
+            await db.rollback()
+            # 回滚后，重新尝试添加和提交
+            try:
+                db.add(log_entry)
+                db.add(official_key)
+                await db.commit()
+                logger.info(f"[ChatProcessor] 事务回滚后，日志和 Key 统计信息已成功重新提交 (Official Key ID {official_key.id})")
+            except Exception as retry_e:
+                logger.error(f"[ChatProcessor] 重试提交日志和 Key 统计失败 (Official Key ID {official_key.id}). 错误: {retry_e}", exc_info=True)
+                await db.rollback()
         except Exception as e:
             logger.error(f"[ChatProcessor] 归档日志或更新 Key 统计失败 (Official Key ID {official_key.id}). 错误: {e}", exc_info=True)
             await db.rollback()
