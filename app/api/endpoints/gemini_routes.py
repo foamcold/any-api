@@ -21,6 +21,7 @@ router = APIRouter()
 async def proxy_v1beta(
     path: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     key_info: tuple = Depends(deps.get_official_key_from_proxy),
     db: AsyncSession = Depends(get_db)
 ):
@@ -67,6 +68,7 @@ async def proxy_v1beta(
         result = await chat_processor.process_request(
             request=request, db=db, official_key=official_key,
             exclusive_key=exclusive_key, user=user,
+            background_tasks=background_tasks,
             model_override=model_override,
             original_format="gemini"
         )
