@@ -2,6 +2,7 @@ import json
 import httpx
 import logging
 import time
+import codecs
 from typing import Optional, Any, Dict, Coroutine
 import asyncio
 import uuid
@@ -643,12 +644,10 @@ class ProxyService:
         brace_counter = 0
         in_string = False
         try:
+            decoder = codecs.getincrementaldecoder('utf-8')(errors='ignore')
             async for raw_chunk in response.aiter_bytes():
-                try:
-                    decoded_chunk = raw_chunk.decode('utf-8')
-                except UnicodeDecodeError:
-                    # 如果解码失败，可能是一个无法转换为文本的特殊块（例如，在某些实现中），记录并跳过
-                    logger.warning(f"[Proxy] Stream chunk could not be decoded to UTF-8, skipping. Chunk: {raw_chunk!r}")
+                decoded_chunk = decoder.decode(raw_chunk)
+                if not decoded_chunk:
                     continue
                 for char in decoded_chunk:
                     buffer += char
