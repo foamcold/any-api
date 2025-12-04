@@ -137,7 +137,8 @@ class ProxyService:
         # 拦截对 /v1beta/models 的 GET 请求，并将其重定向到统一的模型处理服务
         if path == "models" and request.method == "GET":
             logger.info(f"[Proxy] 拦截到 /v1beta/models 请求，转交统一模型服务处理。")
-            return await self.get_and_transform_models(db=db, official_key=official_key_obj)
+            # 传入客户端期望的格式
+            return await self.get_and_transform_models(db=db, official_key=official_key_obj, target_format=incoming_format)
         
         # The target provider is determined by the channel configuration
         target_provider = "gemini" # Default value
@@ -607,20 +608,20 @@ class ProxyService:
             # 对于 OpenAI，我们可能没有持久化的全局 client，或者可以使用一个
             return httpx.AsyncClient(timeout=60.0)
 
-    async def get_and_transform_models(self, db: AsyncSession, official_key: OfficialKey):
+    async def get_and_transform_models(self, db: AsyncSession, official_key: OfficialKey, target_format: str = "openai"):
         """
         获取、转换并根据配置添加伪流模型。
-        这是一个集中的服务，用于处理所有模型列表请求。
+        这是一个集中的、格式感知的服务，用于处理所有模型列表请求。
         """
         # 1. 获取系统配置
         result = await db.execute(select(SystemConfig))
         system_config = result.scalars().first()
         pseudo_streaming_enabled = system_config.pseudo_streaming_enabled if system_config else True
 
-        # 2. 代理到 Google API
-        # 注意：这里硬编码了Google API，未来可以根据 official_key.channel.type 动态化
+        # 2. 代理到上游 API
         async with httpx.AsyncClient() as client:
             try:
+                # 未来可以根据 official_key.channel.type 动态化
                 response = await client.get(
                     "https://generativelanguage.googleapis.com/v1beta/models",
                     params={"key": official_key.key}
@@ -631,34 +632,53 @@ class ProxyService:
             except httpx.RequestError as e:
                 raise HTTPException(status_code=500, detail=f"请求上游 API 时出错: {e}")
 
-        # 3. 转换响应并添加伪流模型
+        # 3. 根据目标格式处理响应
         try:
             gemini_response = response.json()
-            models = gemini_response.get("models", [])
-            
-            openai_models = []
-            for model in models:
-                model_id = model.get("name", "").replace("models/", "")
-                openai_models.append({
-                    "id": model_id,
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "google"
-                })
-            
-            # 如果启用了伪流，则添加伪流模型
-            if pseudo_streaming_enabled:
-                pseudo_models = []
+            original_gemini_models = gemini_response.get("models", [])
+
+            # 如果不启用伪流，则根据格式直接返回
+            if not pseudo_streaming_enabled:
+                if target_format == "gemini":
+                    return gemini_response
+                else: # 默认为 openai
+                    openai_models = []
+                    for model in original_gemini_models:
+                        model_id = model.get("name", "").replace("models/", "")
+                        openai_models.append({
+                            "id": model_id, "object": "model", "created": int(time.time()), "owned_by": "google"
+                        })
+                    return {"object": "list", "data": openai_models}
+
+            # --- 处理伪流逻辑 ---
+            if target_format == "gemini":
+                pseudo_gemini_models = []
+                for model in original_gemini_models:
+                    pseudo_model = model.copy()
+                    pseudo_model["name"] = f"models/伪流/{model['name'].replace('models/', '')}"
+                    pseudo_gemini_models.append(pseudo_model)
+                
+                final_gemini_response = gemini_response.copy()
+                final_gemini_response["models"].extend(pseudo_gemini_models)
+                return final_gemini_response
+            else: # 默认为 openai
+                # 先转换为OpenAI格式
+                openai_models = []
+                for model in original_gemini_models:
+                    model_id = model.get("name", "").replace("models/", "")
+                    openai_models.append({
+                        "id": model_id, "object": "model", "created": int(time.time()), "owned_by": "google"
+                    })
+                # 再添加伪流模型
+                pseudo_openai_models = []
                 for model in openai_models:
                     pseudo_model = model.copy()
                     pseudo_model["id"] = f"伪流/{model['id']}"
-                    pseudo_models.append(pseudo_model)
-                openai_models.extend(pseudo_models)
+                    pseudo_openai_models.append(pseudo_model)
                 
-            return {
-                "object": "list",
-                "data": openai_models
-            }
+                openai_models.extend(pseudo_openai_models)
+                return {"object": "list", "data": openai_models}
+
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"解析或转换模型列表时出错: {e}")
 
