@@ -3,7 +3,6 @@ import time
 import httpx
 import logging
 from typing import AsyncGenerator, Tuple, List, Dict, Any, Optional
-from sqlalchemy.exc import PendingRollbackError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
@@ -21,8 +20,6 @@ from app.models.key import count_tokens_for_messages, get_tokenizer
 from app.core.config import settings
 from sqlalchemy.future import select
 from fastapi import Request
-from app.api.deps import get_db
-from asyncio import CancelledError
 
 import datetime
 
@@ -231,30 +228,9 @@ class ChatProcessor:
             await db.commit()
             logger.info(f"[ChatProcessor] 日志已归档，Key 统计已更新 (Official Key ID {official_key.id})")
 
-        except (PendingRollbackError, OperationalError) as e:
-            key_id = log_entry.official_key_id if log_entry else 'N/A'
-            if "no active connection" in str(e):
-                logger.error(f"[ChatProcessor] 数据库连接已失效，无法完成日志记录 (Official Key ID: {key_id})。错误: {e}", exc_info=False)
-                # 不再尝试 rollback，因为连接已死
-            else:
-                logger.warning(f"[ChatProcessor] 检测到数据库事务问题（可能是客户端断开），正在尝试恢复日志... (Official Key ID: {key_id})")
-                try:
-                    await db.rollback()
-                    log_entry.status = "error"
-                    log_entry.status_code = 499 # Client Closed Request
-                    db.add(log_entry)
-                    await db.commit()
-                    logger.info(f"[ChatProcessor] 成功恢复并记录了中断的请求日志 (Official Key ID: {key_id})")
-                except Exception as retry_e:
-                    logger.error(f"[ChatProcessor] 恢复日志记录失败 (Official Key ID: {key_id})。错误: {retry_e}", exc_info=True)
-                    await db.rollback() # 最后的尝试
         except Exception as e:
-            key_id = log_entry.official_key_id if log_entry else 'N/A'
-            logger.error(f"[ChatProcessor] 归档日志时发生未知错误 (Official Key ID: {key_id})。错误: {e}", exc_info=True)
-            try:
-                await db.rollback()
-            except Exception as rollback_e:
-                logger.error(f"[ChatProcessor] 在未知错误后，回滚事务也失败了 (Official Key ID: {key_id})。回滚错误: {rollback_e}", exc_info=True)
+            logger.error(f"[ChatProcessor] 归档日志或更新 Key 统计失败 (Official Key ID {official_key.id}). 错误: {e}", exc_info=True)
+            await db.rollback()
 
     async def non_stream_chat_completion(
         self, payload: Dict, upstream_format: ApiFormat, original_format: ApiFormat, model: str,
@@ -313,12 +289,11 @@ class ChatProcessor:
         return internal_response, 200, original_format
 
     async def _logged_stream_generator(self, generator: AsyncGenerator, db: AsyncSession, log_entry: Log, official_key: OfficialKey, start_time: float):
+        ttft = 0.0
+        first_chunk = True
+        full_response_content = ""
+        status_code = 200
         try:
-            ttft = 0.0
-            first_chunk = True
-            full_response_content = ""
-            status_code = 200
-            
             async for chunk in generator:
                 if first_chunk:
                     ttft = time.time() - start_time
@@ -329,52 +304,31 @@ class ChatProcessor:
                     if content_part != b'[DONE]':
                         try:
                             json_content = json.loads(content_part)
+                            # Handle cases where json_content might be a list of chunks
                             chunks_to_process = json_content if isinstance(json_content, list) else [json_content]
                             for chunk_item in chunks_to_process:
                                 if not isinstance(chunk_item, dict): continue
 
                                 if chunk_item.get('error'):
+                                    # Ensure status_code is an integer
                                     code = chunk_item.get('error', {}).get('code', 500)
-                                    try: status_code = int(code)
-                                    except (ValueError, TypeError): status_code = 500
-                                
+                                    try:
+                                        status_code = int(code)
+                                    except (ValueError, TypeError):
+                                        status_code = 500 # Fallback for non-integer codes
                                 if chunk_item.get('choices'):
                                     delta = chunk_item['choices'][0].get('delta', {})
                                     full_response_content += delta.get('content', '')
                         except json.JSONDecodeError:
                             pass
                 yield chunk
-
-            # 正确完成时的日志记录
+        finally:
+            # This block now only executes on successful completion.
+            # CancelledError is handled by the middleware in main.py.
             latency = time.time() - start_time
             tokenizer = get_tokenizer(log_entry.model)
             output_tokens = len(tokenizer.encode(full_response_content))
             await self._finalize_log(db, log_entry, official_key, status_code, latency, output_tokens, ttft)
-
-        except CancelledError:
-            # 当客户端断开连接时，FastAPI/Starlette 会触发此异常
-            latency = time.time() - start_time
-            key_id = log_entry.official_key_id if log_entry else "N/A"
-            logger.warning(f"[ChatProcessor] 客户端已断开连接 (Official Key ID: {key_id})。将在新的数据库会话中记录此事件。")
-            
-            # 使用一个新的、干净的会话来记录取消事件
-            async for new_db in get_db():
-                try:
-                    log_entry.status = "error"
-                    log_entry.status_code = 499  # Client Closed Request
-                    log_entry.latency = latency
-                    log_entry.output_tokens = 0
-                    log_entry.ttft = ttft if 'ttft' in locals() and ttft > 0 else latency
-                    new_db.add(log_entry)
-                    await new_db.commit()
-                    logger.info(f"[ChatProcessor] 已成功记录客户端断开连接的日志 (Official Key ID: {key_id})")
-                except Exception as e:
-                    logger.error(f"[ChatProcessor] 在记录客户端断开日志时发生错误: {e}", exc_info=True)
-                    await new_db.rollback()
-                finally:
-                    break # 确保我们只使用一次新会话
-            
-            raise  # 重新抛出 CancelledError，以便上层框架能正确处理
 
 
     async def stream_chat_completion(

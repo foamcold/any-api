@@ -9,6 +9,9 @@ from app.models.system_config import SystemConfig
 from app.core.database import get_db
 from sqlalchemy import select
 import asyncio
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseCall
+from starlette.requests import Request
+from starlette.responses import Response
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -63,13 +66,32 @@ app = FastAPI(
 from fastapi.exceptions import RequestValidationError
 from fastapi import HTTPException
 from app.core.exception_handlers import (
-    api_exception_handler, 
-    validation_exception_handler, 
+    api_exception_handler,
+    validation_exception_handler,
     general_exception_handler
 )
 app.add_exception_handler(HTTPException, api_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
-app.add_exception_handler(Exception, general_exception_handler)
+# 注意：我们不再捕获通用的 Exception，因为它会覆盖掉 CancelledError
+# app.add_exception_handler(Exception, general_exception_handler)
+
+# 注册一个中间件来捕获 CancelledError
+class CancelledRequestMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: RequestResponseCall) -> Response:
+        try:
+            return await call_next(request)
+        except asyncio.CancelledError:
+            # 这里的日志是可选的，因为我们无法轻易访问到请求的详细信息
+            # 主要目的是确保连接被正确关闭
+            logging.info("请求被客户端取消。")
+            # 返回一个标准响应表明客户端关闭了请求
+            return Response(status_code=499)
+        except Exception as exc:
+            # 对于所有其他异常，我们仍然可以使用通用的处理器
+            return await general_exception_handler(request, exc)
+
+app.add_middleware(CancelledRequestMiddleware)
+
 
 # 注册安全中间件 (添加CSP等安全响应头)
 from app.middleware.security_middleware import SecurityHeadersMiddleware
