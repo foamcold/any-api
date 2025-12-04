@@ -617,6 +617,8 @@ class ProxyService:
         result = await db.execute(select(SystemConfig))
         system_config = result.scalars().first()
         pseudo_streaming_enabled = system_config.pseudo_streaming_enabled if system_config else True
+        
+        logger.debug(f"[Proxy] 模型列表处理开始。伪流开关: {pseudo_streaming_enabled}, 目标格式: {target_format}")
 
         # 2. 代理到上游 API，并保留客户端的查询参数（如 pageToken）
         client_params = dict(request.query_params)
@@ -639,9 +641,11 @@ class ProxyService:
         try:
             gemini_response = response.json()
             original_gemini_models = gemini_response.get("models", [])
+            logger.debug(f"[Proxy] 上游返回模型数量: {len(original_gemini_models)}")
 
             # 如果不启用伪流，则根据格式直接返回
             if not pseudo_streaming_enabled:
+                logger.debug(f"[Proxy] 伪流未启用，直接返回原始/转换后的列表。")
                 if target_format == "gemini":
                     return gemini_response
                 else: # 默认为 openai
@@ -654,12 +658,21 @@ class ProxyService:
                     return {"object": "list", "data": openai_models}
 
             # --- 处理伪流逻辑 ---
+            logger.debug(f"[Proxy] 开始生成伪流模型...")
             if target_format == "gemini":
                 pseudo_gemini_models = []
                 for model in original_gemini_models:
                     pseudo_model = model.copy()
-                    pseudo_model["name"] = f"models/伪流/{model['name'].replace('models/', '')}"
+                    # 确保 name 字段存在且格式正确
+                    original_name = model.get("name", "")
+                    clean_name = original_name.replace('models/', '')
+                    pseudo_model["name"] = f"models/伪流/{clean_name}"
+                    # 同时也修改 displayName 以便区分
+                    if "displayName" in pseudo_model:
+                        pseudo_model["displayName"] = f"伪流/{pseudo_model['displayName']}"
                     pseudo_gemini_models.append(pseudo_model)
+                
+                logger.debug(f"[Proxy] 生成了 {len(pseudo_gemini_models)} 个 Gemini 格式的伪流模型。")
                 
                 # 使用更健壮的方式构建响应
                 final_response = gemini_response.copy()
