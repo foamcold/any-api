@@ -3,6 +3,7 @@ import logging
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 from app.models.key import OfficialKey
 from app.models.system_config import SystemConfig
 from app.core.config import settings
@@ -43,7 +44,7 @@ class GeminiService:
         """
         Get the next official key using a round-robin strategy, without checking for active status.
         """
-        stmt = select(OfficialKey)
+        stmt = select(OfficialKey).options(selectinload(OfficialKey.channel))
         if channel_id:
             stmt = stmt.filter(OfficialKey.channel_id == channel_id)
         
@@ -81,7 +82,7 @@ class GeminiService:
         """
         Finds and returns an active OfficialKey object by iterating through available keys.
         """
-        stmt = select(OfficialKey)
+        stmt = select(OfficialKey).options(selectinload(OfficialKey.channel))
         if channel_id:
             stmt = stmt.filter(OfficialKey.channel_id == channel_id)
         

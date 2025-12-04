@@ -49,7 +49,7 @@ class ClaudeService:
         Get the next official key for Claude using a round-robin strategy.
         """
         # Filter keys that belong to a channel with type 'claude'
-        stmt = select(OfficialKey).join(OfficialKey.channel).filter(Channel.type == "claude")
+        stmt = select(OfficialKey).join(OfficialKey.channel).filter(Channel.type == "claude").options(selectinload(OfficialKey.channel))
         
         if channel_id:
             stmt = stmt.filter(OfficialKey.channel_id == channel_id)
@@ -107,7 +107,7 @@ class ClaudeService:
         stmt = select(OfficialKey).join(OfficialKey.channel).filter(
             Channel.type == "claude",
             OfficialKey.is_active == True
-        )
+        ).options(selectinload(OfficialKey.channel))
         
         if channel_id:
             stmt = stmt.filter(OfficialKey.channel_id == channel_id)
@@ -127,7 +127,7 @@ class ClaudeService:
         # Note: get_next_key iterates over ALL keys, not just active ones. This is a known limitation.
         # For a quick fix, we'll ensure the one we get is actually active.
         # This could be inefficient if many keys are disabled.
-        all_keys_stmt = select(OfficialKey).join(OfficialKey.channel).filter(Channel.type == "claude")
+        all_keys_stmt = select(OfficialKey).join(OfficialKey.channel).filter(Channel.type == "claude").options(selectinload(OfficialKey.channel))
         if channel_id:
             all_keys_stmt = all_keys_stmt.filter(OfficialKey.channel_id == channel_id)
         
