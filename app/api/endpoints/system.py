@@ -99,6 +99,7 @@ async def get_system_config(
         "email_whitelist": json.loads(config.email_whitelist) if config.email_whitelist else [],
         "log_level": config.log_level,
         "turnstile_site_key": config.turnstile_site_key if config.enable_turnstile else None,
+        "pseudo_streaming_enabled": config.pseudo_streaming_enabled,
     }
 
     # 如果是管理员，补充敏感信息
@@ -172,6 +173,9 @@ async def update_system_config(
     # 日志配置
     config.log_level = config_in.log_level
 
+    # 伪流配置
+    config.pseudo_streaming_enabled = config_in.pseudo_streaming_enabled
+
     await db.commit()
     await db.refresh(config)
     
@@ -205,4 +209,5 @@ async def update_system_config(
         "turnstile_site_key": config.turnstile_site_key,
         "turnstile_secret_key": config.turnstile_secret_key,
         "log_level": config.log_level,
+        "pseudo_streaming_enabled": config.pseudo_streaming_enabled,
     }

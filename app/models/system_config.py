@@ -40,3 +40,6 @@ class SystemConfig(Base):
 
     # 密钥轮询配置
     last_used_official_key_id = Column(Integer, nullable=True)
+
+    # 伪流配置
+    pseudo_streaming_enabled = Column(Boolean, default=True)

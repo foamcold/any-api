@@ -33,6 +33,9 @@ class SystemConfigBase(BaseModel):
     # 日志配置
     log_level: str = "INFO"
 
+    # 伪流配置
+    pseudo_streaming_enabled: bool = True
+
 class SystemConfigCreate(SystemConfigBase):
     """创建系统配置"""
     pass

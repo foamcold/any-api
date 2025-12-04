@@ -24,6 +24,7 @@ from fastapi import Request, BackgroundTasks
 import traceback
 
 import datetime
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,13 @@ class ChatProcessor:
         final_payload, _ = await universal_converter.convert_request(openai_request.dict(), target_format)
         logger.debug(f"发送到上游的最终请求体: {json.dumps(final_payload, indent=2, ensure_ascii=False)}")
         
+        is_pseudo_stream = False
+        if openai_request.model.startswith("伪流/"):
+            is_pseudo_stream = True
+            openai_request.model = openai_request.model[3:]
+            final_payload["model"] = openai_request.model
+            openai_request.stream = True # 强制流式
+
         if openai_request.stream:
             full_response_content = ""
             ttft = 0.0
@@ -73,10 +81,16 @@ class ChatProcessor:
                 nonlocal full_response_content, ttft
                 first_chunk_time = None
                 
-                gen = self.stream_chat_completion(
-                    final_payload, target_format, original_format, openai_request.model,
-                    official_key, regex_rules, preset_regex_rules
-                )
+                if is_pseudo_stream:
+                    gen = self.pseudo_stream_chat_completion(
+                        final_payload, target_format, original_format, openai_request.model,
+                        official_key, regex_rules, preset_regex_rules
+                    )
+                else:
+                    gen = self.stream_chat_completion(
+                        final_payload, target_format, original_format, openai_request.model,
+                        official_key, regex_rules, preset_regex_rules
+                    )
                 
                 async for chunk in gen:
                     if first_chunk_time is None:
@@ -465,6 +479,68 @@ class ChatProcessor:
             converted_error = ErrorConverter.convert_upstream_error(error_message.encode(), 502, "openai", original_format)
             yield f"data: {json.dumps(converted_error)}\n\n".encode()
             yield b"data: [DONE]\n\n"
+
+    async def pseudo_stream_chat_completion(
+        self, payload: Dict, upstream_format: ApiFormat, original_format: ApiFormat, model: str,
+        official_key: OfficialKey, global_rules: List, local_rules: List
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        处理伪流请求：使用非流式请求上游，但在等待时向客户端发送空流以保持连接。
+        """
+        logger.info(f"启动伪流模式 (模型: {model})")
+        
+        # 创建一个 future 来等待非流式请求的结果
+        non_stream_task = asyncio.create_task(
+            self.non_stream_chat_completion(
+                payload, upstream_format, original_format, model,
+                official_key, global_rules, local_rules
+            )
+        )
+
+        try:
+            while not non_stream_task.done():
+                # 每秒发送一个空的SSE注释或事件以保持连接
+                yield b": keep-alive\n\n"
+                await asyncio.sleep(1)
+
+            # 获取非流式请求的结果
+            result, status_code, _ = await non_stream_task
+            
+            if status_code != 200:
+                # 如果上游出错，将错误信息作为单个数据块发送
+                yield f"data: {json.dumps(result)}\n\n".encode()
+            else:
+                # 将完整的非流式响应转换为单个流式数据块
+                # 我们需要将完整的消息内容包装在一个 'delta' 中
+                full_content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                
+                # 创建一个模拟的流式块
+                stream_chunk = {
+                    "id": f"chatcmpl-pseudo-{int(time.time())}",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "content": full_content
+                            },
+                            "finish_reason": None
+                        }
+                    ]
+                }
+                yield f"data: {json.dumps(stream_chunk)}\n\n".encode()
+
+        except Exception as e:
+            logger.error(f"[PseudoStream] 伪流处理失败: {e}", exc_info=True)
+            error_message = f"伪流处理时发生内部错误: {type(e).__name__}"
+            converted_error = ErrorConverter.convert_upstream_error(error_message.encode(), 500, "openai", original_format)
+            yield f"data: {json.dumps(converted_error)}\n\n".encode()
+        finally:
+            # 确保发送 [DONE] 消息
+            yield b"data: [DONE]\n\n"
+
 
     def _build_request_params(self, base_url: str, upstream_format: str, model: str, official_key: str, is_stream: bool) -> Tuple[str, Dict]:
         """根据目标平台构建URL和Headers"""

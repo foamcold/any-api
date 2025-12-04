@@ -30,13 +30,19 @@ router = APIRouter()
 
 @router.get("/v1/models")
 async def list_models(
+    db: AsyncSession = Depends(deps.get_db),
     key_info: tuple = Depends(deps.get_official_key_from_proxy)
 ):
     """
     处理 GET /v1/models 请求，通过代理到 Google API 列出可用模型。
-    使用新的依赖项处理密钥。
+    如果启用了伪流，则会额外生成带 '伪流/' 前缀的模型。
     """
     official_key, _ = key_info
+
+    # 1. 获取系统配置
+    result = await db.execute(select(SystemConfig))
+    system_config = result.scalars().first()
+    pseudo_streaming_enabled = system_config.pseudo_streaming_enabled if system_config else True
 
     # 2. 代理到 Google API
     async with httpx.AsyncClient() as client:
@@ -51,7 +57,7 @@ async def list_models(
         except httpx.RequestError as e:
             raise HTTPException(status_code=500, detail=f"请求 Google API 时出错: {e}")
 
-    # 3. 转换响应
+    # 3. 转换响应并添加伪流模型
     try:
         gemini_response = response.json()
         models = gemini_response.get("models", [])
@@ -65,6 +71,15 @@ async def list_models(
                 "created": int(time.time()),
                 "owned_by": "google"
             })
+        
+        # 如果启用了伪流，则添加伪流模型
+        if pseudo_streaming_enabled:
+            pseudo_models = []
+            for model in openai_models:
+                pseudo_model = model.copy()
+                pseudo_model["id"] = f"伪流/{model['id']}"
+                pseudo_models.append(pseudo_model)
+            openai_models.extend(pseudo_models)
             
         return {
             "object": "list",
