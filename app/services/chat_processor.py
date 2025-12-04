@@ -510,40 +510,64 @@ class ChatProcessor:
                 yield b": keep-alive\n\n"
                 await asyncio.sleep(1)
 
-            # 获取非流式请求的结果
-            result, status_code, _ = await non_stream_task
+            # 获取非流式请求的结果 (result, status_code, result_format)
+            result, status_code, result_format = await non_stream_task
             
             if status_code != 200:
-                # 如果上游出错，将错误信息作为单个数据块发送
-                yield f"data: {json.dumps(result)}\n\n".encode()
+                # 如果上游出错，错误信息应该已经是正确的客户端格式
+                yield f"data: {json.dumps(result)}\n\n".encode('utf-8')
             else:
-                # 将完整的非流式响应转换为单个流式数据块
-                # 我们需要将完整的消息内容包装在一个 'delta' 中
-                full_content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-                
-                # 创建一个模拟的流式块
-                stream_chunk = {
-                    "id": f"chatcmpl-pseudo-{int(time.time())}",
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {
-                                "content": full_content
-                            },
-                            "finish_reason": None
-                        }
-                    ]
+                # 确保我们正在处理内部OpenAI格式的响应
+                openai_result = result
+                if result_format != "openai":
+                    openai_result, _ = universal_converter.convert_response(result, "openai", result_format, model)
+
+                # 从OpenAI格式的响应中提取内容
+                choices = openai_result.get("choices", [{}])
+                message = choices[0].get("message", {})
+                full_content = message.get("content", "")
+                tool_calls = message.get("tool_calls")
+                finish_reason = "tool_calls" if tool_calls else "stop"
+
+                # --- 模拟OpenAI流式响应 ---
+                chunk_id = f"chatcmpl-pseudo-{int(time.time())}"
+                created_time = int(time.time())
+
+                # 1. 发送角色块
+                role_chunk = {
+                    "id": chunk_id, "object": "chat.completion.chunk", "created": created_time, "model": model,
+                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]
                 }
-                yield f"data: {json.dumps(stream_chunk)}\n\n".encode()
+                yield f"data: {json.dumps(role_chunk)}\n\n".encode('utf-8')
+
+                # 2. 发送内容块 (如果存在)
+                if full_content:
+                    content_chunk = {
+                        "id": chunk_id, "object": "chat.completion.chunk", "created": created_time, "model": model,
+                        "choices": [{"index": 0, "delta": {"content": full_content}, "finish_reason": None}]
+                    }
+                    yield f"data: {json.dumps(content_chunk)}\n\n".encode('utf-8')
+                
+                # 3. 发送工具调用块 (如果存在)
+                if tool_calls:
+                    tool_chunk = {
+                        "id": chunk_id, "object": "chat.completion.chunk", "created": created_time, "model": model,
+                        "choices": [{"index": 0, "delta": {"tool_calls": tool_calls}, "finish_reason": None}]
+                    }
+                    yield f"data: {json.dumps(tool_chunk)}\n\n".encode('utf-8')
+
+                # 4. 发送带有结束原因的最终空 delta 块
+                final_chunk = {
+                    "id": chunk_id, "object": "chat.completion.chunk", "created": created_time, "model": model,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]
+                }
+                yield f"data: {json.dumps(final_chunk)}\n\n".encode('utf-8')
 
         except Exception as e:
             logger.error(f"[PseudoStream] 伪流处理失败: {e}", exc_info=True)
             error_message = f"伪流处理时发生内部错误: {type(e).__name__}"
             converted_error = ErrorConverter.convert_upstream_error(error_message.encode(), 500, "openai", original_format)
-            yield f"data: {json.dumps(converted_error)}\n\n".encode()
+            yield f"data: {json.dumps(converted_error)}\n\n".encode('utf-8')
         finally:
             # 确保发送 [DONE] 消息
             yield b"data: [DONE]\n\n"
