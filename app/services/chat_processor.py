@@ -3,7 +3,7 @@ import time
 import httpx
 import logging
 from typing import AsyncGenerator, Tuple, List, Dict, Any, Optional
-from sqlalchemy.exc import PendingRollbackError
+from sqlalchemy.exc import PendingRollbackError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
