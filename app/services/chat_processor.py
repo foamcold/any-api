@@ -35,7 +35,8 @@ class ChatProcessor:
         exclusive_key: ExclusiveKey,
         user: User,
         log_level: str,
-        model_override: str = None
+        model_override: str = None,
+        original_format: ApiFormat = "openai" # Assume openai by default
     ) -> Tuple[Dict[str, Any], int, ApiFormat]:
         start_time = time.time()
         body_bytes = await request.body()
@@ -47,7 +48,9 @@ class ChatProcessor:
             target_format = official_key.channel.type.lower()
 
         # Convert the incoming request (original_format) to our internal standard (openai)
-        converted_body, original_format = await universal_converter.convert_request(body, "openai", request=request)
+        # The original_format from the request body detection is less reliable than the one passed from the endpoint.
+        # We will use the one passed from the endpoint.
+        converted_body, _ = await universal_converter.convert_request(body, "openai", request=request)
         
         if model_override:
             converted_body["model"] = model_override
