@@ -21,7 +21,16 @@ from app.core.config import settings
 from sqlalchemy.future import select
 from fastapi import Request
 
+import datetime
+
+# Configure logger for detailed output
 logger = logging.getLogger(__name__)
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(message)s')
+handler.setFormatter(formatter)
+if not logger.handlers:
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 class ChatProcessor:
     def __init__(self):
@@ -51,6 +60,10 @@ class ChatProcessor:
         # The original_format from the request body detection is less reliable than the one passed from the endpoint.
         # We will use the one passed from the endpoint.
         converted_body, _ = await universal_converter.convert_request(body, "openai", request=request)
+        
+        logger.info(f"渠道 '{exclusive_key.name}' (ID: {exclusive_key.channel_id}) 接收到客户端请求: {request.url}")
+        logger.info(f"请求转换: 客户端格式 ({original_format}) -> 内部格式 (openai)")
+        logger.info(f"上游转换: 内部格式 (openai) -> 目标格式 ({target_format})")
         
         if model_override:
             converted_body["model"] = model_override
@@ -248,6 +261,7 @@ class ChatProcessor:
             is_stream=False
         )
         
+        logger.info(f"请求上游 URL: {target_url}")
         response = await self.client.post(target_url, json=payload, headers=headers)
         
         if response.status_code != 200:
@@ -274,6 +288,7 @@ class ChatProcessor:
             final_response, _ = universal_converter.convert_response(internal_response, original_format, "openai", model)
             return final_response, 200, original_format
         
+        logger.info(f"响应转换: 上游格式 ({upstream_format}) -> 内部格式 (openai) -> 客户端格式 ({original_format})")
         return internal_response, 200, original_format
 
     async def _logged_stream_generator(self, generator: AsyncGenerator, db: AsyncSession, log_entry: Log, official_key: OfficialKey, start_time: float):
@@ -342,6 +357,7 @@ class ChatProcessor:
         )
 
         try:
+            logger.info(f"请求上游 URL (流式): {target_url}")
             async with self.client.stream("POST", target_url, json=payload, headers=headers) as response:
                 if response.status_code != 200:
                     error_content = await response.aread()

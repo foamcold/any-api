@@ -20,12 +20,13 @@ from typing import List, Dict
 # 强制配置 logger 输出到控制台，确保用户能看到日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-# 额外添加一个 StreamHandler 以防 basicConfig 不生效
+# 统一日志格式
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(message)s')
+handler.setFormatter(formatter)
 if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+    logger.setLevel(logging.INFO)
 
 class ProxyService:
     async def _create_initial_log(
@@ -148,7 +149,9 @@ class ProxyService:
             target_provider = self.identify_target_provider(official_key)
 
         masked_key = f"{official_key[:8]}...{official_key[-4:]}" if len(official_key) > 12 else "***"
-        logger.info(f"[Proxy] Route Decision: Incoming={incoming_format}, Target={target_provider}, Key={masked_key}")
+        
+        logger.info(f"公开代理接收到客户端请求: {request.url}")
+        logger.info(f"请求转换: 客户端格式 ({incoming_format}) -> 目标格式 ({target_provider})")
 
         # Always use the conversion handler as it's now generalized
         return await self._handle_conversion(
@@ -399,6 +402,7 @@ class ProxyService:
         log_entry = await self._create_initial_log(db, key_obj, user, original_model, stream, messages)
 
         try:
+            logger.info(f"请求上游 URL: {target_url}")
             req = client.build_request(
                 target_method, target_url, headers=headers, json=converted_body, timeout=120.0
             )
@@ -436,6 +440,7 @@ class ProxyService:
                     # This part is now handled by tiktoken initially, but can be refined
                     
                     await self._finalize_log(db, log_entry, key_obj, response.status_code, latency, output_tokens, latency)
+                    logger.info(f"响应转换: 上游格式 ({target_provider}) -> 客户端格式 ({incoming_format})")
                     return JSONResponse(final_response)
                         
                 except json.JSONDecodeError:
