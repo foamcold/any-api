@@ -84,6 +84,13 @@ async def get_system_config(
         await db.commit()
         await db.refresh(config)
 
+    # 修复：如果数据库中现有行的该字段为NULL，则为其设置默认值
+    if config.pseudo_streaming_enabled is None:
+        config.pseudo_streaming_enabled = True
+        db.add(config)
+        await db.commit()
+        await db.refresh(config)
+
     # 基础公开配置
     config_dict = {
         "id": config.id,
