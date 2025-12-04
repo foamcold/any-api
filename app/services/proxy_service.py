@@ -354,7 +354,7 @@ class ProxyService:
                     await asyncio.wait_for(asyncio.shield(upstream_task), timeout=1.0)
                 except asyncio.TimeoutError:
                     logger.debug("[Proxy] Pseudo-stream heartbeat.")
-                    yield ":\n\n"
+                    yield b":\n\n"
             
             ttft = time.time() - start_time
             
@@ -363,8 +363,8 @@ class ProxyService:
             
             if status_code >= 400:
                 converted_error = ErrorConverter.convert_upstream_error(resp_content, status_code, from_provider, to_format)
-                yield f"data: {json.dumps(converted_error)}\n\n"
-                yield "data: [DONE]\n\n"
+                yield f"data: {json.dumps(converted_error)}\n\n".encode('utf-8')
+                yield b"data: [DONE]\n\n"
                 return
 
             resp_json = json.loads(resp_content)
@@ -383,31 +383,31 @@ class ProxyService:
             created_time = int(time.time())
 
             # 1. 发送角色块
-            yield f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': original_model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
+            yield f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': original_model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n".encode('utf-8')
             
             # 2. 发送内容块
             if response_content:
-                yield f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': original_model, 'choices': [{'index': 0, 'delta': {'content': response_content}, 'finish_reason': None}]})}\n\n"
+                yield f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': original_model, 'choices': [{'index': 0, 'delta': {'content': response_content}, 'finish_reason': None}]})}\n\n".encode('utf-8')
 
             # 3. 发送工具调用块并设置结束原因
             finish_reason = "stop"
             if tool_calls:
                 finish_reason = "tool_calls"
-                yield f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': original_model, 'choices': [{'index': 0, 'delta': {'tool_calls': tool_calls}, 'finish_reason': None}]})}\n\n"
+                yield f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': original_model, 'choices': [{'index': 0, 'delta': {'tool_calls': tool_calls}, 'finish_reason': None}]})}\n\n".encode('utf-8')
 
             # 4. 发送带有结束原因的最终空 delta 块
-            yield f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': original_model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': finish_reason}]})}\n\n"
+            yield f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': original_model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': finish_reason}]})}\n\n".encode('utf-8')
 
             # 5. 发送 [DONE] 消息
-            yield "data: [DONE]\n\n"
+            yield b"data: [DONE]\n\n"
 
         except Exception as e:
             status_code = 500
             logger.error(f"[Proxy] Error in pseudo-stream generator: {e}", exc_info=True)
             error_message = f"Pseudo-stream failed: {str(e)}"
             converted_error = ErrorConverter.convert_upstream_error(error_message.encode('utf-8'), 500, from_provider, to_format)
-            yield f"data: {json.dumps(converted_error)}\n\n"
-            yield "data: [DONE]\n\n"
+            yield f"data: {json.dumps(converted_error)}\n\n".encode('utf-8')
+            yield b"data: [DONE]\n\n"
         finally:
             latency = time.time() - start_time
             await self._finalize_log(db, log_entry, key_obj, status_code, latency, output_tokens, ttft)
