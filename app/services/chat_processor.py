@@ -296,7 +296,8 @@ class ChatProcessor:
 
     async def non_stream_chat_completion(
         self, payload: Dict, upstream_format: ApiFormat, original_format: ApiFormat, model: str,
-        official_key: OfficialKey, global_rules: List, local_rules: List
+        official_key: OfficialKey, global_rules: List, local_rules: List,
+        force_internal_format: bool = False
     ) -> Tuple[Dict, int, ApiFormat]:
         if upstream_format == "gemini":
             payload = gemini_safety_service.add_safety_settings_to_payload(payload)
@@ -344,14 +345,16 @@ class ChatProcessor:
             internal_response['choices'][0]['message']['content'] = content
 
         # 3. Convert back to the original client format if necessary
-        if original_format != "openai":
+        if not force_internal_format and original_format != "openai":
             final_response, _ = universal_converter.convert_response(internal_response, original_format, "openai", model)
+            logger.info(f"响应转换: 上游格式 ({upstream_format}) -> 内部格式 (openai) -> 客户端格式 ({original_format})")
+            logger.debug(f"准备发送给客户端的最终响应体: {json.dumps(final_response, indent=2, ensure_ascii=False)}")
             return final_response, 200, original_format
         
-        logger.info(f"响应转换: 上游格式 ({upstream_format}) -> 内部格式 (openai) -> 客户端格式 ({original_format})")
+        logger.info(f"响应转换: 上游格式 ({upstream_format}) -> 内部格式 (openai)")
         logger.debug(f"从上游接收的原始响应体: {json.dumps(upstream_response, indent=2, ensure_ascii=False)}")
-        logger.debug(f"准备发送给客户端的最终响应体: {json.dumps(internal_response, indent=2, ensure_ascii=False)}")
-        return internal_response, 200, original_format
+        logger.debug(f"返回给调用者的内部响应体: {json.dumps(internal_response, indent=2, ensure_ascii=False)}")
+        return internal_response, 200, "openai" # Return internal format
 
     # This function is no longer needed as the logic is now inside process_request
     # async def _logged_stream_generator(...):
@@ -500,7 +503,8 @@ class ChatProcessor:
         non_stream_task = asyncio.create_task(
             self.non_stream_chat_completion(
                 payload, upstream_format, original_format, model,
-                official_key, global_rules, local_rules
+                official_key, global_rules, local_rules,
+                force_internal_format=True # Ensure we get back the internal OpenAI format
             )
         )
 
@@ -510,18 +514,13 @@ class ChatProcessor:
                 yield b": keep-alive\n\n"
                 await asyncio.sleep(1)
 
-            # 获取非流式请求的结果 (result, status_code, result_format)
-            result, status_code, result_format = await non_stream_task
+            # 获取非流式请求的结果, 由于 force_internal_format=True, result_format 必定是 "openai"
+            openai_result, status_code, _ = await non_stream_task
             
             if status_code != 200:
-                # 如果上游出错，错误信息应该已经是正确的客户端格式
-                yield f"data: {json.dumps(result)}\n\n".encode('utf-8')
+                # 如果上游出错，错误信息已经是正确的客户端格式
+                yield f"data: {json.dumps(openai_result)}\n\n".encode('utf-8')
             else:
-                # 确保我们正在处理内部OpenAI格式的响应
-                openai_result = result
-                if result_format != "openai":
-                    openai_result, _ = universal_converter.convert_response(result, "openai", result_format, model)
-
                 # 从OpenAI格式的响应中提取内容
                 choices = openai_result.get("choices", [{}])
                 message = choices[0].get("message", {})
@@ -529,39 +528,47 @@ class ChatProcessor:
                 tool_calls = message.get("tool_calls")
                 finish_reason = "tool_calls" if tool_calls else "stop"
 
-                # --- 模拟OpenAI流式响应 ---
+                # --- 模拟流式响应并转换为原始格式 ---
                 chunk_id = f"chatcmpl-pseudo-{int(time.time())}"
                 created_time = int(time.time())
 
-                # 1. 发送角色块
-                role_chunk = {
+                # 1. 创建并转换角色块
+                openai_role_chunk = {
                     "id": chunk_id, "object": "chat.completion.chunk", "created": created_time, "model": model,
                     "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]
                 }
-                yield f"data: {json.dumps(role_chunk)}\n\n".encode('utf-8')
+                final_role_chunk, _ = universal_converter.convert_chunk(openai_role_chunk, original_format, "openai", model)
+                if final_role_chunk:
+                    yield f"data: {json.dumps(final_role_chunk)}\n\n".encode('utf-8')
 
-                # 2. 发送内容块 (如果存在)
+                # 2. 创建并转换内容块
                 if full_content:
-                    content_chunk = {
+                    openai_content_chunk = {
                         "id": chunk_id, "object": "chat.completion.chunk", "created": created_time, "model": model,
                         "choices": [{"index": 0, "delta": {"content": full_content}, "finish_reason": None}]
                     }
-                    yield f"data: {json.dumps(content_chunk)}\n\n".encode('utf-8')
+                    final_content_chunk, _ = universal_converter.convert_chunk(openai_content_chunk, original_format, "openai", model)
+                    if final_content_chunk:
+                        yield f"data: {json.dumps(final_content_chunk)}\n\n".encode('utf-8')
                 
-                # 3. 发送工具调用块 (如果存在)
+                # 3. 创建并转换工具调用块
                 if tool_calls:
-                    tool_chunk = {
+                    openai_tool_chunk = {
                         "id": chunk_id, "object": "chat.completion.chunk", "created": created_time, "model": model,
                         "choices": [{"index": 0, "delta": {"tool_calls": tool_calls}, "finish_reason": None}]
                     }
-                    yield f"data: {json.dumps(tool_chunk)}\n\n".encode('utf-8')
+                    final_tool_chunk, _ = universal_converter.convert_chunk(openai_tool_chunk, original_format, "openai", model)
+                    if final_tool_chunk:
+                        yield f"data: {json.dumps(final_tool_chunk)}\n\n".encode('utf-8')
 
-                # 4. 发送带有结束原因的最终空 delta 块
-                final_chunk = {
+                # 4. 创建并转换结束块
+                openai_final_chunk = {
                     "id": chunk_id, "object": "chat.completion.chunk", "created": created_time, "model": model,
                     "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]
                 }
-                yield f"data: {json.dumps(final_chunk)}\n\n".encode('utf-8')
+                final_done_chunk, _ = universal_converter.convert_chunk(openai_final_chunk, original_format, "openai", model)
+                if final_done_chunk:
+                    yield f"data: {json.dumps(final_done_chunk)}\n\n".encode('utf-8')
 
         except Exception as e:
             logger.error(f"[PseudoStream] 伪流处理失败: {e}", exc_info=True)
