@@ -250,19 +250,27 @@ class ChatProcessor:
             converted_error = ErrorConverter.convert_upstream_error(response.content, response.status_code, upstream_format, original_format)
             return converted_error, response.status_code, original_format
 
-        gemini_response = response.json()
-        openai_response = universal_converter.gemini_response_to_openai_response(gemini_response, model)
+        # --- Dynamic Response Handling ---
+        upstream_response = response.json()
         
-        if openai_response.get('choices') and openai_response['choices'][0]['message'].get('content'):
-            content = openai_response['choices'][0]['message']['content']
-            content = self._apply_postprocessing(content, global_rules, local_rules)
-            openai_response['choices'][0]['message']['content'] = content
+        # 1. Convert to a universal internal format (OpenAI format)
+        if upstream_format == "gemini":
+            internal_response, _ = universal_converter.convert_response(upstream_response, "openai", "gemini", model)
+        else: # claude, openai are already compatible or close to openai format
+            internal_response, _ = universal_converter.convert_response(upstream_response, "openai", upstream_format, model)
 
-        if original_format == "gemini":
-            gemini_response = universal_converter.openai_response_to_gemini_response(openai_response)
-            return gemini_response, 200, original_format
+        # 2. Apply post-processing
+        if internal_response.get('choices') and internal_response['choices'][0].get('message', {}).get('content'):
+            content = internal_response['choices'][0]['message']['content']
+            content = self._apply_postprocessing(content, global_rules, local_rules)
+            internal_response['choices'][0]['message']['content'] = content
+
+        # 3. Convert back to the original client format if necessary
+        if original_format != "openai":
+            final_response, _ = universal_converter.convert_response(internal_response, original_format, "openai", model)
+            return final_response, 200, original_format
         
-        return openai_response, 200, original_format
+        return internal_response, 200, original_format
 
     async def _logged_stream_generator(self, generator: AsyncGenerator, db: AsyncSession, log_entry: Log, official_key: OfficialKey, start_time: float):
         ttft = 0.0
@@ -335,32 +343,62 @@ class ChatProcessor:
                     error_content = await response.aread()
                     converted_error = ErrorConverter.convert_upstream_error(error_content, response.status_code, upstream_format, original_format)
                     yield f"data: {json.dumps(converted_error)}\n\n".encode()
+                    yield b"data: [DONE]\n\n"
                     return
 
+                # If the upstream is already in OpenAI format, just pass it through.
+                if upstream_format == "openai" and original_format == "openai":
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+                    return
+
+                # --- Dynamic Chunk Conversion ---
                 buffer = ""
-                async for chunk in response.aiter_text():
-                    buffer += chunk
-                    decoder = json.JSONDecoder()
-                    while buffer:
-                        buffer = buffer.lstrip(' \t\n\r,([')
-                        if not buffer: break
-                        try:
-                            gemini_chunk, idx = decoder.raw_decode(buffer)
-                            openai_chunk = universal_converter.gemini_to_openai_chunk(gemini_chunk, model)
-                            if openai_chunk.get('choices') and openai_chunk['choices'][0]['delta'].get('content'):
-                                content = openai_chunk['choices'][0]['delta']['content']
-                                content = self._apply_postprocessing(content, global_rules, local_rules)
-                                openai_chunk['choices'][0]['delta']['content'] = content
-                            
-                            if original_format == "gemini":
-                                gemini_response_chunk = universal_converter.openai_chunk_to_gemini_chunk(openai_chunk)
-                                yield f"data: {json.dumps(gemini_response_chunk)}\n\n".encode()
-                            else:
-                                yield f"data: {json.dumps(openai_chunk)}\n\n".encode()
-                            
-                            buffer = buffer[idx:]
-                        except json.JSONDecodeError:
-                            break
+                async for text_chunk in response.aiter_text():
+                    buffer += text_chunk
+                    # For Gemini, chunks are often sent as a list `[{}, {}]`
+                    # We need robust parsing that handles incomplete JSON fragments.
+                    if upstream_format == "gemini":
+                        decoder = json.JSONDecoder()
+                        while buffer:
+                            buffer = buffer.lstrip(' \t\n\r,([')
+                            if not buffer: break
+                            try:
+                                gemini_chunk, idx = decoder.raw_decode(buffer)
+                                openai_chunk, _ = universal_converter.convert_chunk(gemini_chunk, "openai", "gemini", model)
+                                if openai_chunk.get('choices') and openai_chunk['choices'][0]['delta'].get('content'):
+                                    content = openai_chunk['choices'][0]['delta']['content']
+                                    content = self._apply_postprocessing(content, global_rules, local_rules)
+                                    openai_chunk['choices'][0]['delta']['content'] = content
+                                
+                                final_chunk, _ = universal_converter.convert_chunk(openai_chunk, original_format, "openai", model)
+                                yield f"data: {json.dumps(final_chunk)}\n\n".encode()
+                                
+                                buffer = buffer[idx:]
+                            except json.JSONDecodeError:
+                                # Incomplete JSON object, wait for more data
+                                break
+                    else: # For OpenAI, Claude, chunks are typically one JSON object per line
+                        lines = buffer.split('\n')
+                        buffer = lines[-1] # Keep the last, possibly incomplete line
+                        for line in lines[:-1]:
+                            if line.startswith('data: '):
+                                content = line[6:]
+                                if content.strip() == '[DONE]':
+                                    continue
+                                try:
+                                    upstream_chunk = json.loads(content)
+                                    internal_chunk, _ = universal_converter.convert_chunk(upstream_chunk, "openai", upstream_format, model)
+                                    if internal_chunk.get('choices') and internal_chunk['choices'][0]['delta'].get('content'):
+                                        content = internal_chunk['choices'][0]['delta']['content']
+                                        content = self._apply_postprocessing(content, global_rules, local_rules)
+                                        internal_chunk['choices'][0]['delta']['content'] = content
+                                    
+                                    final_chunk, _ = universal_converter.convert_chunk(internal_chunk, original_format, "openai", model)
+                                    yield f"data: {json.dumps(final_chunk)}\n\n".encode()
+                                except json.JSONDecodeError:
+                                    pass # Ignore malformed lines
+
             yield b"data: [DONE]\n\n"
         except httpx.RequestError as e:
             logger.error(f"[ChatProcessor] Upstream request failed: {e}", exc_info=True)
