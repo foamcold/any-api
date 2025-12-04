@@ -17,16 +17,7 @@ from app.models.user import User
 from app.models.key import count_tokens_for_messages, get_tokenizer
 from typing import List, Dict
 
-# 强制配置 logger 输出到控制台，确保用户能看到日志
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-# 统一日志格式
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(message)s')
-handler.setFormatter(formatter)
-if not logger.handlers:
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
 
 class ProxyService:
     async def _create_initial_log(
@@ -495,6 +486,7 @@ class ProxyService:
 
     async def _stream_converter(self, response: httpx.Response, from_provider: str, to_format: str, original_model: str):
         """流式响应转换生成器"""
+        logger.info(f"响应转换 (流式): 上游格式 ({from_provider}) -> 客户端格式 ({to_format})")
         buffer = ""
         try:
             async for line in response.aiter_lines():

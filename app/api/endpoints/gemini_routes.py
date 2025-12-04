@@ -16,15 +16,6 @@ from app.services.proxy_service import proxy_service
 
 router = APIRouter()
 
-async def ensure_log_level(db: AsyncSession) -> str:
-    """Ensure service logger level matches system config and return it"""
-    result = await db.execute(select(SystemConfig))
-    config = result.scalars().first()
-    log_level = "INFO"
-    if config and config.log_level:
-        log_level = config.log_level
-        gemini_service.update_log_level(log_level)
-    return log_level
 
 @router.api_route("/v1beta/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def proxy_v1beta(
@@ -33,7 +24,6 @@ async def proxy_v1beta(
     key_info: tuple = Depends(deps.get_official_key_from_proxy),
     db: AsyncSession = Depends(get_db)
 ):
-    log_level = await ensure_log_level(db)
     official_key, user = key_info
     
     # 判断是否为 gapi- key
@@ -76,8 +66,9 @@ async def proxy_v1beta(
 
         result = await chat_processor.process_request(
             request=request, db=db, official_key=official_key,
-            exclusive_key=exclusive_key, user=user, log_level=log_level,
-            model_override=model_override
+            exclusive_key=exclusive_key, user=user,
+            model_override=model_override,
+            original_format="gemini"
         )
         
         if isinstance(result, AsyncGenerator):

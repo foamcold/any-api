@@ -1,3 +1,4 @@
+import logging
 from typing import Generator, Optional, Tuple
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
@@ -87,7 +88,7 @@ async def verify_turnstile(
     if system_config and system_config.enable_turnstile:
         if not system_config.turnstile_secret_key:
             # 如果启用了但未配置密钥，则跳过验证并记录错误
-            print("错误：Turnstile已启用但未配置Secret Key")
+            logging.error("Turnstile已启用但未配置Secret Key")
             return
 
         # 尝试从 JSON body 或 form data 中获取 token
@@ -202,12 +203,12 @@ async def get_official_key_from_proxy(
         # 兼容某些客户端可能使用的 x-goog-api-key 或 key 参数
         client_key = request.headers.get("x-goog-api-key") or request.query_params.get("key")
         if not client_key:
-            print("DEBUG: deps - 未找到 API 密钥")
+            logging.debug("未找到 API 密钥")
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未提供 API 密钥")
     else:
         client_key = auth_header.split(" ")[1]
 
-    print(f"DEBUG: deps - 提取到的 Key: {client_key}, 来源: {'Auth Header' if auth_header else 'Query/X-Header'}")
+    logging.debug(f"提取到的 Key: {client_key}, 来源: {'Auth Header' if auth_header else 'Query/X-Header'}")
 
     if client_key and client_key.startswith("gapi-"):
         # 是专属密钥，需要验证并轮询
@@ -235,7 +236,7 @@ async def get_official_key_from_proxy(
         channel_type = channel.type.lower()
         official_key = None
         
-        print(f"DEBUG: deps - 专属密钥绑定渠道: ID={channel.id}, 名称={channel.name}, 类型={channel_type}")
+        logging.debug(f"专属密钥绑定渠道: ID={channel.id}, 名称={channel.name}, 类型={channel_type}")
         
         official_key_obj = None
         try:
@@ -250,7 +251,7 @@ async def get_official_key_from_proxy(
                 error_detail = f"渠道 '{channel.name}' (类型: {channel_type}, ID: {channel.id}) 下没有可用的官方密钥。"
                 raise HTTPException(status_code=503, detail=error_detail)
 
-            print(f"DEBUG: deps - 成功从渠道 {channel.name} 获取到官方密钥: {official_key_obj.key[:8]}...")
+            logging.debug(f"成功从渠道 {channel.name} 获取到官方密钥: {official_key_obj.key[:8]}...")
             return official_key_obj, user
 
         except HTTPException as e:

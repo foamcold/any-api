@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 import os
+import logging
+from app.core.logging import setup_logging
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.models.system_config import SystemConfig
@@ -10,6 +12,10 @@ import asyncio
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 配置日志
+    setup_logging()
+    logging.info("应用启动，开始配置...")
+
     # Ensure data directory exists
     if "sqlite" in settings.DATABASE_URL:
         db_path = settings.DATABASE_URL.split("///")[1]
@@ -25,15 +31,19 @@ async def lifespan(app: FastAPI):
         config = (await db.execute(stmt)).scalars().first()
         if config and config.site_name:
             app.title = config.site_name
+            logging.info(f"站点名称已加载: {app.title}")
         else:
             app.title = "Any API"
+            logging.info("未找到站点名称，使用默认值 'Any API'")
     except Exception as e:
-        print(f"警告: 无法加载系统配置: {e}")
-        print("提示: 如果这是首次运行,请执行: python migrate.py upgrade")
+        logging.warning(f"无法加载系统配置: {e}")
+        logging.warning("提示: 如果这是首次运行,请执行: python migrate.py upgrade")
     finally:
         await db.close()
             
     yield
+
+    logging.info("应用关闭。")
 
 app = FastAPI(
     title="Any API",
@@ -102,7 +112,7 @@ if os.path.exists(static_dir):
     async def serve_root():
         return FileResponse(os.path.join(static_dir, "index.html"))
 else:
-    print("警告: 静态文件目录 'static' 或 'dist' 未找到,前端将无法访问。")
+    logging.warning("静态文件目录 'static' 或 'dist' 未找到,前端将无法访问。")
     @app.get("/", include_in_schema=False)
     async def root_api_only():
         return {"message": "Welcome to Any API (Frontend not found)"}

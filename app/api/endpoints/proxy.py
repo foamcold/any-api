@@ -26,40 +26,6 @@ from app.core.config import settings
 
 router = APIRouter()
 
-# Configure logger
-logger = logging.getLogger(__name__)
-current_log_level = "INFO"
-
-async def get_log_level(db: AsyncSession):
-    global current_log_level
-    result = await db.execute(select(SystemConfig))
-    config = result.scalars().first()
-    if config and config.log_level:
-        current_log_level = config.log_level
-        return config.log_level
-    current_log_level = "INFO"
-    return "INFO"
-
-def update_logger_level(level_name: str):
-    level = getattr(logging, level_name.upper(), logging.INFO)
-    logger.setLevel(level)
-    
-    # Ensure handler exists and set level for handler as well
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-    
-    for handler in logger.handlers:
-        handler.setLevel(level)
-
-def debug_log(message: str):
-    """
-    Wrapper for debug logging.
-    """
-    if current_log_level == "DEBUG":
-        logger.debug(message)
 
 
 @router.get("/v1/models")
@@ -136,10 +102,6 @@ async def chat_completions(
     db: AsyncSession = Depends(deps.get_db),
     key_info: tuple = Depends(deps.get_official_key_from_proxy)
 ):
-    # 0. Configure Logging Level
-    log_level = await get_log_level(db)
-    update_logger_level(log_level)
-
     # 1. Auth & Key Validation
     official_key, user = key_info
     
@@ -154,9 +116,9 @@ async def chat_completions(
         if client_key:
             result = await db.execute(select(ExclusiveKey).filter(ExclusiveKey.key == client_key))
             exclusive_key = result.scalars().first()
-            debug_log(f"处理专属 Key 请求. Key ID: {exclusive_key.id}, 名称: {exclusive_key.name}")
+            logging.debug(f"处理专属 Key 请求. Key ID: {exclusive_key.id}, 名称: {exclusive_key.name}")
     else:
-        debug_log(f"处理官方 Key 请求.")
+        logging.debug(f"处理官方 Key 请求.")
 
     # 2. Parse Request
     try:
@@ -174,7 +136,6 @@ async def chat_completions(
             official_key=official_key,
             exclusive_key=exclusive_key,
             user=user,
-            log_level=log_level,
             # For this endpoint, the client is always speaking the "openai" format
             original_format="openai"
         )

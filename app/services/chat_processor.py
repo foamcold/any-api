@@ -23,14 +23,7 @@ from fastapi import Request
 
 import datetime
 
-# Configure logger for detailed output
 logger = logging.getLogger(__name__)
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(message)s')
-handler.setFormatter(formatter)
-if not logger.handlers:
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
 
 class ChatProcessor:
     def __init__(self):
@@ -43,7 +36,6 @@ class ChatProcessor:
         official_key: OfficialKey, # Changed from str to OfficialKey object
         exclusive_key: ExclusiveKey,
         user: User,
-        log_level: str,
         model_override: str = None,
         original_format: ApiFormat = "openai" # Assume openai by default
     ) -> Tuple[Dict[str, Any], int, ApiFormat]:
@@ -356,6 +348,7 @@ class ChatProcessor:
             is_stream=True
         )
 
+        logger.info(f"响应转换 (流式): 上游格式 ({upstream_format}) -> 内部格式 (openai) -> 客户端格式 ({original_format})")
         try:
             logger.info(f"请求上游 URL (流式): {target_url}")
             async with self.client.stream("POST", target_url, json=payload, headers=headers) as response:
