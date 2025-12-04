@@ -135,9 +135,9 @@ class ProxyService:
         official_key = official_key_obj.key
 
         # 拦截对 /v1beta/models 的 GET 请求，并将其重定向到统一的模型处理服务
+        # CRITICAL: 必须立即 return，否则会穿透到下方的通用 GET 处理逻辑
         if path == "models" and request.method == "GET":
             logger.info(f"[Proxy] 拦截到 /v1beta/models 请求，转交统一模型服务处理。")
-            # 传入客户端期望的格式和完整的request对象，并立即返回
             return await self.get_and_transform_models(request=request, db=db, official_key=official_key_obj, target_format=incoming_format)
         
         # The target provider is determined by the channel configuration
@@ -661,9 +661,10 @@ class ProxyService:
                     pseudo_model["name"] = f"models/伪流/{model['name'].replace('models/', '')}"
                     pseudo_gemini_models.append(pseudo_model)
                 
-                final_gemini_response = gemini_response.copy()
-                final_gemini_response["models"].extend(pseudo_gemini_models)
-                return final_gemini_response
+                # 使用更健壮的方式构建响应
+                final_response = gemini_response.copy()
+                final_response["models"] = original_gemini_models + pseudo_gemini_models
+                return final_response
             else: # 默认为 openai
                 # 先转换为OpenAI格式
                 openai_models = []
@@ -679,8 +680,9 @@ class ProxyService:
                     pseudo_model["id"] = f"伪流/{model['id']}"
                     pseudo_openai_models.append(pseudo_model)
                 
-                openai_models.extend(pseudo_openai_models)
-                return {"object": "list", "data": openai_models}
+                # 使用更健壮的方式构建响应
+                all_openai_models = openai_models + pseudo_openai_models
+                return {"object": "list", "data": all_openai_models}
 
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"解析或转换模型列表时出错: {e}")
