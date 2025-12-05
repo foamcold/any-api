@@ -18,6 +18,10 @@ from app.services.preset_proxy.utils import _merge_messages
 from app.services.variable_service import variable_service
 from app.services.gemini_service import gemini_service
 from app.services.regex_service import regex_service
+from app.models.regex import RegexRule
+from app.models.preset_regex import PresetRegexRule
+from sqlalchemy.future import select
+
 
 class PresetProxyService:
     def __init__(
@@ -37,6 +41,42 @@ class PresetProxyService:
         self.logger = logging.getLogger(__name__)
         self.logger.debug(f"[{self.request_id}] PresetProxyService initialized for incoming format: {self.incoming_format}")
 
+    async def _apply_all_rules(self, text: str, rule_type: str, preset_id: Optional[int]) -> str:
+        original_text = text
+
+        # 1. 全局正则
+        if self.exclusive_key_obj.enable_regex:
+            global_rules_stmt = select(RegexRule).filter(RegexRule.type == rule_type)
+            global_rules_result = await self.db.execute(global_rules_stmt)
+            global_rules = global_rules_result.scalars().all()
+            if global_rules:
+                processed_text = regex_service.process(text, global_rules)
+                if processed_text != text:
+                    self.logger.debug(f"[{self.request_id}] 全局正则({rule_type})应用: '{text}' -> '{processed_text}'")
+                    text = processed_text
+
+        # 2. 局部正则
+        if preset_id:
+            local_rules_stmt = select(PresetRegexRule).filter(
+                PresetRegexRule.preset_id == preset_id,
+                PresetRegexRule.type == rule_type
+            )
+            local_rules_result = await self.db.execute(local_rules_stmt)
+            local_rules = local_rules_result.scalars().all()
+            if local_rules:
+                processed_text = regex_service.process(text, local_rules)
+                if processed_text != text:
+                    self.logger.debug(f"[{self.request_id}] 局部正则({rule_type})应用: '{text}' -> '{processed_text}'")
+                    text = processed_text
+
+        # 3. 变量处理 (默认开启)
+        processed_text = variable_service.parse_variables(text)
+        if processed_text != text:
+            self.logger.debug(f"[{self.request_id}] 变量处理应用: '{text}' -> '{processed_text}'")
+            text = processed_text
+            
+        return text
+
     async def proxy_request(self, body: dict, is_pseudo_stream: bool = False):
         """
         统一处理预设模式代理请求的核心方法。
@@ -53,7 +93,6 @@ class PresetProxyService:
 
         self.logger.debug(f"[{self.request_id}] 原始模型: {original_model}, 客户端期望流式: {client_wants_stream}, 上游将使用流式: {is_upstream_stream}")
 
-        # 只要是伪流请求，就强制进入模拟流
         if is_pseudo_stream and client_wants_stream:
             self.logger.debug(f"[{self.request_id}] 检测到伪流请求，且客户端需要流式响应，启动模拟流响应。")
             return StreamingResponse(
@@ -66,8 +105,14 @@ class PresetProxyService:
             raise Exception("专属密钥未绑定渠道")
         
         official_key = await gemini_service.get_active_key(self.db, channel.id)
-
         preset = self.exclusive_key_obj.preset
+        preset_id = preset.id if preset else None
+
+        # 预处理用户输入
+        for msg in body.get("messages", []):
+            if "content" in msg and isinstance(msg["content"], str):
+                msg["content"] = await self._apply_all_rules(msg["content"], "pre", preset_id)
+
         preset_messages = []
         preset_model: Optional[str] = None
         if preset:
@@ -86,21 +131,16 @@ class PresetProxyService:
             else:
                 messages = []
 
+            # 对预设内容本身也应用变量处理 (默认开启)
             for msg in messages:
                 if "content" in msg and isinstance(msg["content"], str):
-                    msg["content"] = variable_service.parse_variables(msg["content"])
+                    original_content = msg["content"]
+                    processed_content = variable_service.parse_variables(original_content)
+                    if original_content != processed_content:
+                        self.logger.debug(f"[{self.request_id}] 预设内容变量处理: '{original_content}' -> '{processed_content}'")
+                        msg["content"] = processed_content
             
             preset_messages = messages
-        
-        if preset:
-            from app.models.preset_regex import PresetRegexRule
-            from sqlalchemy.future import select
-            stmt = select(PresetRegexRule).filter(PresetRegexRule.preset_id == preset.id, PresetRegexRule.type == "pre")
-            result = await self.db.execute(stmt)
-            rules = result.scalars().all()
-            for msg in body.get("messages", []):
-                if "content" in msg and isinstance(msg["content"], str):
-                    msg["content"] = regex_service.process(msg["content"], rules)
 
         target_format = channel.type
         channel_model = channel.model
@@ -110,9 +150,9 @@ class PresetProxyService:
         upstream_response = await send_request_func(model_name, converted_body, is_upstream_stream)
 
         if is_upstream_stream:
-            return StreamingResponse(self._stream_response(upstream_response, target_format, model_name, preset.id if preset else None), media_type="text/event-stream")
+            return StreamingResponse(self._stream_response(upstream_response, target_format, model_name, preset_id), media_type="text/event-stream")
         else:
-            return await self._handle_non_stream_response(upstream_response, target_format, model_name, preset.id if preset else None)
+            return await self._handle_non_stream_response(upstream_response, target_format, model_name, preset_id)
 
     async def _stream_response(self, upstream_response, upstream_format: str, model: str, preset_id: Optional[int]):
         if upstream_response.status_code >= 400:
@@ -121,14 +161,6 @@ class PresetProxyService:
             yield "data: [DONE]\n\n"
             await upstream_response.aclose()
             return
-
-        rules = []
-        if preset_id:
-            from app.models.preset_regex import PresetRegexRule
-            from sqlalchemy.future import select
-            stmt = select(PresetRegexRule).filter(PresetRegexRule.preset_id == preset_id, PresetRegexRule.type == "post")
-            result = await self.db.execute(stmt)
-            rules = result.scalars().all()
 
         buffer = b""
         async for chunk in upstream_response.aiter_bytes():
@@ -145,12 +177,21 @@ class PresetProxyService:
                         chunk_data = json.loads(line[6:])
                         converted_chunk = self._convert_chunk(chunk_data, upstream_format, model)
                         if not converted_chunk: continue
-                        if rules and "candidates" in converted_chunk:
+
+                        # OpenAI 格式后处理
+                        if "choices" in converted_chunk:
+                            for choice in converted_chunk["choices"]:
+                                if "delta" in choice and "content" in choice["delta"] and choice["delta"]["content"]:
+                                    choice["delta"]["content"] = await self._apply_all_rules(choice["delta"]["content"], "post", preset_id)
+                        
+                        # Gemini 格式后处理
+                        if "candidates" in converted_chunk:
                             for candidate in converted_chunk["candidates"]:
                                 if "content" in candidate and "parts" in candidate["content"]:
                                     for part in candidate["content"]["parts"]:
                                         if "text" in part:
-                                            part["text"] = regex_service.process(part["text"], rules)
+                                            part["text"] = await self._apply_all_rules(part["text"], "post", preset_id)
+
                         yield f"data: {json.dumps(converted_chunk)}\n\n"
                     except json.JSONDecodeError:
                         continue
@@ -163,16 +204,13 @@ class PresetProxyService:
 
         response_json = upstream_response.json()
         converted_response = self._convert_response(response_json, upstream_format, model, is_stream=False)
-        if preset_id:
-            from app.models.preset_regex import PresetRegexRule
-            from sqlalchemy.future import select
-            stmt = select(PresetRegexRule).filter(PresetRegexRule.preset_id == preset_id, PresetRegexRule.type == "post")
-            result = await self.db.execute(stmt)
-            rules = result.scalars().all()
-            if rules and "choices" in converted_response:
-                for choice in converted_response["choices"]:
-                    if "message" in choice and "content" in choice["message"]:
-                        choice["message"]["content"] = regex_service.process(choice["message"]["content"], rules)
+        
+        # 后处理
+        if "choices" in converted_response:
+            for choice in converted_response["choices"]:
+                if "message" in choice and "content" in choice["message"] and choice["message"]["content"]:
+                    choice["message"]["content"] = await self._apply_all_rules(choice["message"]["content"], "post", preset_id)
+
         return JSONResponse(content=converted_response)
 
     def _convert_request(self, body: dict, preset_messages: list, target_format: str, preset_model: Optional[str] = None, channel_model: Optional[str] = None):
