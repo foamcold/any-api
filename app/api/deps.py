@@ -239,3 +239,16 @@ def _get_client_key(request: Request) -> Optional[str]:
     else:
         logging.debug("在任何位置都未找到密钥。")
     return key
+
+async def get_system_config(db: AsyncSession = Depends(get_db)) -> Optional[SystemConfig]:
+   """
+   依赖项：获取系统配置。
+   """
+   result = await db.execute(select(SystemConfig).limit(1))
+   config = result.scalars().first()
+   if not config:
+       # 在没有找到配置时可以返回一个默认配置对象或None
+       # 这里返回None，让调用者处理
+       logging.warning("未在数据库中找到系统配置。")
+       return None
+   return config

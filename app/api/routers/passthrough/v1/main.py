@@ -1,4 +1,5 @@
 import logging
+import json
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import deps
@@ -11,7 +12,8 @@ logger = logging.getLogger(__name__)
 async def chat_completions(
     request: Request,
     db: AsyncSession = Depends(deps.get_db),
-    key_info: tuple = Depends(deps.get_key_info)
+    key_info: tuple = Depends(deps.get_key_info),
+    system_config: dict = Depends(deps.get_system_config)
 ):
     """
     统一处理 /v1/chat/completions 请求，并根据密钥类型分派到不同的服务。
@@ -20,6 +22,28 @@ async def chat_completions(
     
     logger.debug(f"路由 /v1/chat/completions：准备根据密钥类型分派。客户端密钥: '{client_key}'")
 
+    # 检查是否为伪流请求
+    body = await request.json()
+    model_name = body.get("model", "")
+    is_pseudo_stream = False
+    if system_config and system_config.pseudo_streaming_enabled and model_name.startswith("伪流/"):
+        is_pseudo_stream = True
+        body["model"] = model_name.replace("伪流/", "", 1)
+        # 重新构建请求以更新body
+        _body_bytes = json.dumps(body).encode('utf-8')
+        
+        _stream_sent = False
+        async def receive():
+            nonlocal _stream_sent
+            if not _stream_sent:
+                _stream_sent = True
+                return {'type': 'http.request', 'body': _body_bytes, 'more_body': False}
+            return {'type': 'http.disconnect'}
+        
+        request = Request(request.scope, receive=receive)
+
+    is_stream_override = False if is_pseudo_stream else None
+
     if client_key.startswith("gapi-"):
         logger.debug("检测到 gapi- 密钥，正在分派到 PresetProxyService...")
         from app.services.preset_proxy.main import PresetProxyService
@@ -27,9 +51,10 @@ async def chat_completions(
             db=db,
             exclusive_key_obj=key_obj,
             user=user,
-            incoming_format="openai"
+            incoming_format="openai",
+            is_stream_override=is_stream_override
         )
-        return await service.proxy_request(request)
+        return await service.proxy_request(request, is_pseudo_stream)
     else:
         logger.debug("检测到非 gapi- 密钥，正在分派到 LLMProxyService...")
         if client_key.startswith("sk-"):
@@ -44,15 +69,17 @@ async def chat_completions(
             official_key_obj=key_obj,
             user=user,
             incoming_format="openai", # /v1 接收OpenAI格式
-            target_provider=target_provider
+            target_provider=target_provider,
+            is_stream_override=is_stream_override
         )
-        return await proxy_service.proxy_request(request)
+        return await proxy_service.proxy_request(request, is_pseudo_stream)
 
 @router.get("/models")
 async def list_models(
     request: Request,
     db: AsyncSession = Depends(deps.get_db),
-    key_info: tuple = Depends(deps.get_key_info)
+    key_info: tuple = Depends(deps.get_key_info),
+    system_config: dict = Depends(deps.get_system_config)
 ):
     """
     统一处理 /v1/models 请求，并根据密钥类型分派。
@@ -70,7 +97,7 @@ async def list_models(
             user=user,
             incoming_format="openai"
         )
-        return await service.proxy_list_models(request)
+        return await service.proxy_list_models(request, system_config)
     else:
         logger.debug("检测到非 gapi- 密钥，正在分派到 LLMProxyService...")
         if client_key.startswith("sk-"):
@@ -87,4 +114,4 @@ async def list_models(
             incoming_format="openai",
             target_provider=target_provider
         )
-        return await proxy_service.proxy_list_models(request)
+        return await proxy_service.proxy_list_models(request, system_config)

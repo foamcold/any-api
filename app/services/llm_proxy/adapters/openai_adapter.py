@@ -4,8 +4,9 @@
 """
 import json
 from typing import Dict, Any, Tuple, Optional, List
+from app.services.preset_proxy.utils import _merge_messages
 
-def to_gemini_request(openai_request: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+def to_gemini_request(openai_request: Dict[str, Any], preset_messages: Optional[List[Dict[str, Any]]] = None) -> Tuple[Dict[str, Any], str]:
     """
     将OpenAI格式的请求转换为Gemini格式。
     返回转换后的请求体和原始模型名称。
@@ -19,10 +20,14 @@ def to_gemini_request(openai_request: Dict[str, Any]) -> Tuple[Dict[str, Any], s
     else:
         gemini_model = model # 假设用户可能直接指定了gemini模型
 
+    # 合并预设消息和用户消息
+    raw_messages = (preset_messages or []) + openai_request.get("messages", [])
+    all_messages = _merge_messages(raw_messages)
+
     # 构建Gemini的contents
     contents = []
     system_prompt = None
-    for message in openai_request.get("messages", []):
+    for message in all_messages:
         role = message.get("role")
         if role == "system":
             # Gemini通过system_instruction字段处理系统提示
@@ -195,20 +200,20 @@ def parse_data_url(data_url: str) -> Dict[str, Any]:
         return {}
 
 def from_gemini_to_openai_models(gemini_models_response: Dict[str, Any]) -> Dict[str, Any]:
-   """
-   将Gemini格式的模型列表转换为OpenAI格式。
-   """
-   openai_models = []
-   for model in gemini_models_response.get("models", []):
-       model_id = model.get("name", "").split('/')[-1]
-       openai_models.append({
-           "id": model_id,
-           "object": "model",
-           "created": 0, # OpenAI API需要此字段，但Gemini不提供，设为0
-           "owned_by": "google"
-       })
-   
-   return {
-       "object": "list",
-       "data": openai_models
-   }
+    """
+    将Gemini格式的模型列表转换为OpenAI格式。
+    """
+    openai_models = []
+    for model in gemini_models_response.get("models", []):
+        model_id = model.get("name", "").split('/')[-1]
+        openai_models.append({
+            "id": model_id,
+            "object": "model",
+            "created": 0, # OpenAI API需要此字段，但Gemini不提供，设为0
+            "owned_by": "google"
+        })
+    
+    return {
+        "object": "list",
+        "data": openai_models
+    }
