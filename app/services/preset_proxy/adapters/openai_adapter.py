@@ -2,6 +2,9 @@ from typing import Dict, Any, Tuple, List
 import json
 import time
 import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 
 def _merge_messages(messages: list) -> list:
     """
@@ -27,11 +30,16 @@ def to_gemini_request(openai_request: Dict[str, Any], preset_messages: List[Dict
     """
     将 OpenAI 请求格式转换为 Gemini 请求格式，并注入预设。
     """
+    logger.debug(f"适配器接收到预设消息: {preset_messages}")
+    logger.debug(f"适配器接收到用户消息: {openai_request.get('messages', [])}")
+    
     contents = []
     
     # 1. 合并和处理消息
     all_messages = preset_messages + openai_request.get("messages", [])
+    logger.debug(f"合并后的所有消息: {all_messages}")
     merged_messages = _merge_messages(all_messages)
+    logger.debug(f"处理连续角色后的消息: {merged_messages}")
     
     # 2. 分离 system 指令
     system_parts = []
@@ -41,11 +49,14 @@ def to_gemini_request(openai_request: Dict[str, Any], preset_messages: List[Dict
             system_parts.append({"text": msg["content"]})
         else:
             other_messages.append(msg)
+    logger.debug(f"分离出的系统指令: {system_parts}")
+    logger.debug(f"剩余的用户/模型消息: {other_messages}")
 
     # 3. 转换为 Gemini contents 格式
     for msg in other_messages:
         role = "user" if msg["role"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+    logger.debug(f"转换为 Gemini contents 的最终内容: {contents}")
 
     # 4. 构建最终 payload
     payload = {
@@ -58,8 +69,9 @@ def to_gemini_request(openai_request: Dict[str, Any], preset_messages: List[Dict
     }
     if system_parts:
         payload["system_instruction"] = {"parts": system_parts}
-        
+    
     model_name = openai_request.get("model", "gemini-1.5-pro")
+    logger.debug(f"最终发送给上游的 payload: {payload}")
     
     return payload, model_name
 

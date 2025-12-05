@@ -53,6 +53,8 @@ class PresetProxyService:
         preset = self.exclusive_key_obj.preset
         preset_messages = []
         if preset:
+            self.logger.debug(f"[{self.request_id}] 找到关联预设: {preset.name} (ID: {preset.id})")
+            self.logger.debug(f"[{self.request_id}] 原始预设内容: {preset.content}")
             # The preset content is a JSON string of a list of messages
             messages_data = json.loads(preset.content)
             
@@ -63,11 +65,19 @@ class PresetProxyService:
                 messages = messages_data
             else:
                 messages = []
+            self.logger.debug(f"[{self.request_id}] 解析后的消息列表: {messages}")
 
             for msg in messages:
                 if "content" in msg and isinstance(msg["content"], str):
-                    msg["content"] = variable_service.parse_variables(msg["content"])
+                    original_content = msg["content"]
+                    msg["content"] = variable_service.parse_variables(original_content)
+                    if original_content != msg["content"]:
+                        self.logger.debug(f"[{self.request_id}] 预设变量替换: '{original_content}' -> '{msg['content']}'")
+            
             preset_messages = messages
+            self.logger.debug(f"[{self.request_id}] 最终准备传递给适配器的预设消息: {preset_messages}")
+        else:
+            self.logger.debug(f"[{self.request_id}] 未找到关联预设。")
 
         # 3. 解析请求体并应用前置正则
         body = await request.json()
