@@ -242,19 +242,31 @@ class PresetProxyService:
                 return body, model_name
             
             elif self.incoming_format == "gemini":
-                # 当输入和输出都是 Gemini 时，应用与 openai -> gemini 相同的转换逻辑
+                # 当输入和输出都是 Gemini 时，应用统一的转换逻辑
                 
-                # 1. 将所有 system 消息转换为 user 消息
-                all_messages = preset_messages + body.get("contents", [])
+                # 1. 规范化输入：将 gemini 的 'parts' 转换为 'content' 字符串
+                normalized_incoming_messages = []
+                for msg in body.get("contents", []):
+                    text_content = "".join(p.get("text", "") for p in msg.get("parts", []))
+                    normalized_incoming_messages.append({"role": msg.get("role"), "content": text_content})
+
+                # 2. 合并预设和规范化后的消息，并将 'system' 转为 'user'
+                all_messages = preset_messages + normalized_incoming_messages
                 for msg in all_messages:
-                    if msg["role"] == "system":
+                    if msg.get("role") == "system":
                         msg["role"] = "user"
                 
-                # 2. 合并消息
+                # 3. 合并连续的消息
                 merged_messages = _merge_messages(all_messages)
                 
-                # 3. 重新构建 contents
-                body["contents"] = merged_messages
+                # 4. 转换回 Gemini 'contents' 格式
+                final_contents = []
+                for msg in merged_messages:
+                    role = "user" if msg.get("role") == "user" else "model"
+                    final_contents.append({"role": role, "parts": [{"text": msg.get("content", "")}]})
+
+                # 5. 更新 body
+                body["contents"] = final_contents
                 return body, model_name
 
         # --- 格式不同的情况 ---
