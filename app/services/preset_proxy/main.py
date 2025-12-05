@@ -10,11 +10,12 @@ from app.models.key import ExclusiveKey, OfficialKey
 from app.models.user import User
 from app.models.channel import Channel
 from app.models.preset import Preset
-from app.services.preset_proxy.adapters import openai_adapter, gemini_adapter
+from app.services.preset_proxy.adapters import openai_adapter
 from app.services.preset_proxy.providers import openai_provider, gemini_provider
 from app.services.variable_service import variable_service
 from app.services.gemini_service import gemini_service
 from app.services.regex_service import regex_service
+from app.services import universal_adapter
 
 class PresetProxyService:
     def __init__(
@@ -35,9 +36,6 @@ class PresetProxyService:
         self.logger.debug(f"[{self.request_id}] PresetProxyService initialized for incoming format: {self.incoming_format}")
 
     async def proxy_request(self, request: Request):
-        """
-        统一处理预设模式代理请求的核心方法。
-        """
         self.logger.debug(f"[{self.request_id}] 接收到新的预设模式请求。")
 
         # 1. 获取渠道和官方密钥
@@ -45,23 +43,29 @@ class PresetProxyService:
         if not channel:
             raise Exception("专属密钥未绑定渠道")
         
-        # 此处需要一个服务来获取活跃的官方密钥
         official_key = await gemini_service.get_active_key(self.db, channel.id)
-
 
         # 2. 获取预设并处理变量
         preset = self.exclusive_key_obj.preset
         preset_messages = []
         if preset:
-            # The preset content is a JSON string of a list of messages
             messages = json.loads(preset.content)
             for msg in messages:
                 if "content" in msg and isinstance(msg["content"], str):
                     msg["content"] = variable_service.parse_variables(msg["content"])
             preset_messages = messages
 
-        # 3. 解析请求体并应用前置正则
+        # 3. 解析请求体并转换为通用格式
         body = await request.json()
+        
+        if self.is_stream_override is not None:
+            is_stream = self.is_stream_override
+        else:
+            is_stream = body.get("stream", False)
+
+        general_request = universal_adapter.to_general_openai_request(body, self.incoming_format, is_stream)
+
+        # 4. 应用前置正则
         if preset:
             from app.models.preset_regex import PresetRegexRule
             from sqlalchemy.future import select
@@ -70,25 +74,28 @@ class PresetProxyService:
             result = await self.db.execute(stmt)
             rules = result.scalars().all()
             
-            for msg in body.get("messages", []):
-                if "content" in msg and isinstance(msg["content"], str):
-                    msg["content"] = regex_service.process(msg["content"], rules)
+            for msg in general_request.messages:
+                if isinstance(msg.content, str):
+                    msg.content = regex_service.process(msg.content, rules)
 
-        # 4. 格式转换和预设注入
+        # 5. 注入预设
+        general_request.messages = [msg for msg in preset_messages] + [msg.model_dump() for msg in general_request.messages]
+
+        # 6. 转换为目标渠道格式
         target_format = channel.type
         self.logger.debug(f"[{self.request_id}] Target channel format: {target_format}")
-        converted_body, model_name = self._convert_request(body, preset_messages, target_format)
+        
+        if target_format == "gemini":
+            converted_body, model_name = openai_adapter.to_gemini_request({"messages": general_request.messages, **general_request.model_dump(exclude={"messages"})}, [])
+        else: # OpenAI or compatible
+            converted_body = general_request.model_dump(exclude_none=True)
+            model_name = general_request.model
 
-        # 5. 发送请求到上游
+        # 7. 发送请求到上游
         send_request_func = self._get_provider(channel, official_key)
         upstream_response = await send_request_func(model_name, converted_body)
 
-        # 6. 处理响应
-        if self.is_stream_override is not None:
-            is_stream = self.is_stream_override
-        else:
-            is_stream = body.get("stream", False)
-            
+        # 8. 处理响应
         if is_stream:
             if upstream_response.status_code >= 400:
                 error_content = await upstream_response.aread()
@@ -101,15 +108,6 @@ class PresetProxyService:
             return await self._handle_non_stream_response(upstream_response, target_format, model_name, preset.id if preset else None)
 
     async def _stream_response(self, upstream_response, upstream_format: str, model: str, preset_id: Optional[int]):
-        if upstream_response.status_code >= 400:
-            error_content = await upstream_response.aread()
-            # Here you might want to convert the error to the client's expected format
-            yield f"data: {json.dumps({'error': {'message': error_content.decode(), 'type': 'upstream_error'}})}\n\n"
-            yield "data: [DONE]\n\n"
-            # Ensure the stream is closed
-            await upstream_response.aclose()
-            return
-
         rules = []
         if preset_id:
             from app.models.preset_regex import PresetRegexRule
@@ -119,13 +117,11 @@ class PresetProxyService:
             rules = result.scalars().all()
 
         async for chunk in upstream_response.aiter_bytes():
-            # 假设每个块都是一个完整的 JSON 对象，以 'data: ' 开头
             if chunk.startswith(b'data: '):
                 try:
                     chunk_data = json.loads(chunk[6:])
                     converted_chunk = self._convert_chunk(chunk_data, upstream_format, model)
                     
-                    # Apply regex to content if it exists
                     if rules and "choices" in converted_chunk:
                         for choice in converted_chunk["choices"]:
                             if "delta" in choice and "content" in choice["delta"]:
@@ -160,31 +156,6 @@ class PresetProxyService:
 
         return JSONResponse(content=converted_response)
 
-    def _convert_request(self, body: dict, preset_messages: list, target_format: str):
-        # No conversion needed if formats match
-        if self.incoming_format == target_format:
-            self.logger.debug(f"[{self.request_id}] Request format matches channel format ({self.incoming_format}), no conversion needed.")
-            return body, body.get("model")
-
-        conversion_direction = f"{self.incoming_format} -> {target_format}"
-        self.logger.debug(f"[{self.request_id}] Converting request body: {conversion_direction}")
-
-        # OpenAI (client) -> Gemini (channel)
-        if self.incoming_format == "openai" and target_format == "gemini":
-            return openai_adapter.to_gemini_request(body, preset_messages)
-        
-        # Gemini (client) -> OpenAI (channel)
-        if self.incoming_format == "gemini" and target_format == "openai":
-            if self.is_stream_override is not None:
-                is_stream = self.is_stream_override
-            else:
-                is_stream = body.get("stream", False)
-            return gemini_adapter.to_openai_request(body, preset_messages, is_stream)
-
-        # Fallback for unhandled conversions
-        self.logger.warning(f"[{self.request_id}] Unhandled request conversion: {conversion_direction}")
-        return body, body.get("model")
-
     def _get_provider(self, channel: Channel, official_key: OfficialKey):
         if channel.type == "openai":
             provider = openai_provider.OpenAIProvider(api_key=official_key.key, base_url=channel.api_url)
@@ -195,44 +166,21 @@ class PresetProxyService:
         raise ValueError(f"Unsupported channel type: {channel.type}")
 
     def _convert_chunk(self, chunk: dict, upstream_format: str, model: str):
-        # No conversion needed
         if upstream_format == self.incoming_format:
             return chunk
 
-        conversion_direction = f"{upstream_format} -> {self.incoming_format}"
-        if not hasattr(self, '_logged_chunk_conversion'):
-            self.logger.debug(f"[{self.request_id}] Converting stream chunks: {conversion_direction}")
-            self._logged_chunk_conversion = True
-
-        # Gemini (upstream) -> OpenAI (client)
         if upstream_format == "gemini" and self.incoming_format == "openai":
             return openai_adapter.from_gemini_stream_chunk(chunk, model)
 
-        # OpenAI (upstream) -> Gemini (client)
-        if upstream_format == "openai" and self.incoming_format == "gemini":
-            return gemini_adapter.from_openai_stream_chunk(chunk)
-
-        if not hasattr(self, '_logged_chunk_conversion_warning'):
-            self.logger.warning(f"[{self.request_id}] Unhandled chunk conversion: {conversion_direction}")
-            self._logged_chunk_conversion_warning = True
+        # OpenAI -> Gemini conversion is not implemented for streaming in this direction
         return chunk
 
     def _convert_response(self, response: dict, upstream_format: str, model: str):
-        # No conversion needed
         if upstream_format == self.incoming_format:
-            self.logger.debug(f"[{self.request_id}] Response format matches client format ({self.incoming_format}), no conversion needed.")
             return response
 
-        conversion_direction = f"{upstream_format} -> {self.incoming_format}"
-        self.logger.debug(f"[{self.request_id}] Converting non-stream response: {conversion_direction}")
-
-        # Gemini (upstream) -> OpenAI (client)
         if upstream_format == "gemini" and self.incoming_format == "openai":
             return openai_adapter.from_gemini_response(response, model)
 
-        # OpenAI (upstream) -> Gemini (client)
-        if upstream_format == "openai" and self.incoming_format == "gemini":
-            return gemini_adapter.from_openai_response(response)
-
-        self.logger.warning(f"[{self.request_id}] Unhandled response conversion: {conversion_direction}")
+        # OpenAI -> Gemini conversion is not implemented for non-streaming in this direction
         return response
