@@ -75,8 +75,8 @@ docker-compose up -d
 1. **克隆仓库**
 
 ```bash
-git clone https://github.com/foamcold/gproxy.git
-cd gproxy
+git clone https://github.com/foamcold/any-api.git
+cd any-api
 ```
 
 2. **后端设置**

@@ -282,7 +282,7 @@ export default function PresetsPage() {
                 }
             };
 
-            exportToJSON(exportData, `gproxy-preset-${selectedPreset.name}`);
+            exportToJSON(exportData, `any-api-preset-${selectedPreset.name}`);
             toast({
                 variant: 'success',
                 title: '导出成功',

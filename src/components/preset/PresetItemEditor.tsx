@@ -197,7 +197,7 @@ export function PresetItemEditor({ preset, onItemsChange }: PresetItemEditorProp
             }
         };
 
-        exportToJSON(exportData, `gproxy-preset-items-${preset.name}`);
+        exportToJSON(exportData, `any-api-preset-items-${preset.name}`);
         toast({
             variant: 'success',
             title: '导出成功',

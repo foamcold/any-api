@@ -20,6 +20,8 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import type { PresetItem } from '@/services/presetService';
+import { Cpu, User, Bot } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface PresetItemEditDialogProps {
     item: PresetItem;
@@ -29,15 +31,21 @@ interface PresetItemEditDialogProps {
 }
 
 const roleOptions = [
-    { value: 'system', label: '系统 (System)', icon: '🔧' },
-    { value: 'user', label: '用户 (User)', icon: '👤' },
-    { value: 'assistant', label: '助手 (Assistant)', icon: '🤖' },
+    { value: 'system', label: '系统 (System)', icon: <Cpu className="w-5 h-5 text-muted-foreground" /> },
+    { value: 'user', label: '用户 (User)', icon: <User className="w-5 h-5 text-muted-foreground" /> },
+    { value: 'assistant', label: '助手 (Assistant)', icon: <Bot className="w-5 h-5 text-muted-foreground" /> },
 ];
 
+const typeColors = {
+    normal: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-100',
+    history: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-100',
+    user_input: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-100',
+};
+
 const typeOptions = [
-    { value: 'normal', label: '普通', description: '直接注入此条目' },
+    { value: 'normal', label: '普通消息', description: '直接注入此条目' },
+    { value: 'history', label: '历史消息', description: '插入历史对话（除最后一条用户消息）' },
     { value: 'user_input', label: '用户输入', description: '插入最后一条用户消息' },
-    { value: 'history', label: '历史', description: '插入历史对话（除最后一条用户消息）' },
 ];
 
 export function PresetItemEditDialog({
@@ -48,7 +56,20 @@ export function PresetItemEditDialog({
 }: PresetItemEditDialogProps) {
     const [formData, setFormData] = useState<PresetItem>(item);
 
-    // Sync formData when item prop changes
+    // Sync formData when item prop or type changes
+    useEffect(() => {
+        setFormData(prevData => {
+            let newRole = prevData.role;
+            if (prevData.type === 'history') {
+                newRole = 'system';
+            } else if (prevData.type === 'user_input') {
+                newRole = 'user';
+            }
+            return { ...prevData, role: newRole };
+        });
+    }, [item, formData.type]);
+
+    // Sync formData only when the initial item prop changes
     useEffect(() => {
         setFormData(item);
     }, [item]);
@@ -85,38 +106,6 @@ export function PresetItemEditDialog({
                         />
                     </div>
 
-                    {/* 角色选择 - 使用Select下拉框并保留图标 */}
-                    <div className="space-y-2">
-                        <Label htmlFor="role">角色</Label>
-                        <Select
-                            value={formData.role}
-                            onValueChange={(value) => setFormData({ ...formData, role: value as any })}
-                        >
-                            <SelectTrigger id="role">
-                                <SelectValue>
-                                    <div className="flex items-center gap-2">
-                                        <span className="text-lg">
-                                            {roleOptions.find(o => o.value === formData.role)?.icon}
-                                        </span>
-                                        <span>
-                                            {roleOptions.find(o => o.value === formData.role)?.label}
-                                        </span>
-                                    </div>
-                                </SelectValue>
-                            </SelectTrigger>
-                            <SelectContent>
-                                {roleOptions.map((option) => (
-                                    <SelectItem key={option.value} value={option.value}>
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-lg">{option.icon}</span>
-                                            <span>{option.label}</span>
-                                        </div>
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                    </div>
-
                     {/* 类型选择 - 使用Select下拉框 */}
                     <div className="space-y-2">
                         <Label htmlFor="type">类型</Label>
@@ -124,23 +113,65 @@ export function PresetItemEditDialog({
                             value={formData.type}
                             onValueChange={(value) => setFormData({ ...formData, type: value as any })}
                         >
-                            <SelectTrigger id="type">
+                            <SelectTrigger id="type" className={cn((typeColors as any)[formData.type])}>
                                 <SelectValue>
-                                    {typeOptions.find(o => o.value === formData.type)?.label}
+                                    <div className="flex items-center gap-2">
+                                        <span>{typeOptions.find(o => o.value === formData.type)?.label}</span>
+                                    </div>
                                 </SelectValue>
                             </SelectTrigger>
                             <SelectContent>
                                 {typeOptions.map((option) => (
-                                    <SelectItem key={option.value} value={option.value}>
+                                    <SelectItem
+                                        key={option.value}
+                                        value={option.value}
+                                        className={cn((typeColors as any)[option.value])}
+                                    >
                                         <div className="flex flex-col items-start">
                                             <span className="font-medium">{option.label}</span>
-                                            <span className="text-xs text-muted-foreground">{option.description}</span>
+                                            <span className="text-xs opacity-80">{option.description}</span>
                                         </div>
                                     </SelectItem>
                                 ))}
                             </SelectContent>
                         </Select>
                     </div>
+
+                    {/* 角色选择 - 仅在普通消息时显示 */}
+                    {formData.type === 'normal' && (
+                        <div className="space-y-2">
+                            <Label htmlFor="role">角色</Label>
+                            <Select
+                                value={formData.role}
+                                onValueChange={(value) => setFormData({ ...formData, role: value as any })}
+                            >
+                                <SelectTrigger id="role">
+                                    <SelectValue>
+                                        <div className="flex items-center gap-2">
+                                            <div className="w-5 h-5 flex items-center justify-center">
+                                                {roleOptions.find(o => o.value === formData.role)?.icon}
+                                            </div>
+                                            <span>
+                                                {roleOptions.find(o => o.value === formData.role)?.label}
+                                            </span>
+                                        </div>
+                                    </SelectValue>
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {roleOptions.map((option) => (
+                                        <SelectItem key={option.value} value={option.value}>
+                                            <div className="flex items-center gap-2">
+                                                <div className="w-5 h-5 flex items-center justify-center">
+                                                    {option.icon}
+                                                </div>
+                                                <span>{option.label}</span>
+                                            </div>
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                    )}
 
                     {/* 内容编辑 - 仅在类型为normal时显示 */}
                     {formData.type === 'normal' && (

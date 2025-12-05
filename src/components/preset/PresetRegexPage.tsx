@@ -287,7 +287,7 @@ export function PresetRegexPage({ presetId }: PresetRegexPageProps) {
             }
         };
 
-        exportToJSON(exportData, `gproxy-preset-regex-${rule.name}`);
+        exportToJSON(exportData, `any-api-preset-regex-${rule.name}`);
         toast({ variant: 'success', title: '导出成功' });
     };
 
@@ -306,7 +306,7 @@ export function PresetRegexPage({ presetId }: PresetRegexPageProps) {
             }
         }));
 
-        exportToJSON(exportData, `gproxy-preset-regex-rules`);
+        exportToJSON(exportData, `any-api-preset-regex-rules`);
         toast({ variant: 'success', title: '导出成功' });
     };
 

@@ -298,7 +298,7 @@ export default function RegexPage() {
             }
         }));
 
-        exportToJSON(exportData, 'gproxy-regex-rules');
+        exportToJSON(exportData, 'any-api-regex-rules');
         toast({ variant: 'success', title: '导出成功' });
     };
 
@@ -318,7 +318,7 @@ export default function RegexPage() {
             }
         };
 
-        exportToJSON(exportData, `gproxy-regex-${rule.name}`);
+        exportToJSON(exportData, `any-api-regex-${rule.name}`);
         toast({ variant: 'success', title: '导出成功' });
     };
 

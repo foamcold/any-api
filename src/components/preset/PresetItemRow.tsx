@@ -1,6 +1,6 @@
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { GripVertical, Pencil, Trash2, Copy } from 'lucide-react';
+import { GripVertical, Pencil, Trash2, Copy, Cpu, User, Bot } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { PresetItem } from '@/services/presetService';
@@ -16,21 +16,21 @@ interface PresetItemRowProps {
 }
 
 const roleIcons = {
-    system: <span className="text-lg">🔧</span>,
-    user: <span className="text-lg">👤</span>,
-    assistant: <span className="text-lg">🤖</span>,
+    system: <Cpu className="w-5 h-5 text-muted-foreground" />,
+    user: <User className="w-5 h-5 text-muted-foreground" />,
+    assistant: <Bot className="w-5 h-5 text-muted-foreground" />,
 };
 
 const typeLabels = {
-    normal: '普通',
+    normal: '普通消息',
+    history: '历史消息',
     user_input: '用户输入',
-    history: '历史',
 };
 
 const typeColors = {
     normal: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-100',
-    user_input: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-100',
     history: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-100',
+    user_input: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-100',
 };
 
 export function PresetItemRow({ item, onEdit, onDelete, onDuplicate, onToggle }: PresetItemRowProps) {
@@ -68,7 +68,7 @@ export function PresetItemRow({ item, onEdit, onDelete, onDuplicate, onToggle }:
             </div>
 
             {/* 角色图标 */}
-            <div className="flex-shrink-0">
+            <div className="flex-shrink-0 w-5 h-5 flex items-center justify-center">
                 {roleIcons[item.role]}
             </div>
 
