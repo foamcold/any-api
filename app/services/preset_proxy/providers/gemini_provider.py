@@ -6,9 +6,8 @@ class GeminiProvider:
         self.api_key = api_key
         self.base_url = base_url.rstrip('/')
 
-    async def generate_content(self, model: str, body: Dict[str, Any]) -> httpx.Response:
+    async def generate_content(self, model: str, body: Dict[str, Any], is_stream: bool) -> httpx.Response:
         client = httpx.AsyncClient()
-        is_stream = body.pop("stream", False)
         action = "streamGenerateContent?alt=sse" if is_stream else "generateContent"
         
         url = f"{self.base_url}/v1beta/models/{model}:{action}"

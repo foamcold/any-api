@@ -89,25 +89,44 @@ class PresetProxyService:
         converted_body, model_name = self._convert_request(body, preset_messages, target_format)
 
         # 5. 发送请求到上游
+        if self.is_stream_override is not None:
+            is_stream = self.is_stream_override
+        else:
+            is_stream = body.get("stream", False)
+            
         send_request_func = self._get_provider(channel, official_key)
-        upstream_response = await send_request_func(model_name, converted_body)
+        upstream_response = await send_request_func(model_name, converted_body, is_stream)
 
         # 6. 处理响应
         if self.is_stream_override is not None:
             is_stream = self.is_stream_override
         else:
             is_stream = body.get("stream", False)
-            
+
+        # 检查上游响应是否为流式
+        is_upstream_stream = "text/event-stream" in upstream_response.headers.get("content-type", "")
+
         if is_stream:
-            if upstream_response.status_code >= 400:
-                error_content = await upstream_response.aread()
-                return JSONResponse(
-                    status_code=upstream_response.status_code,
-                    content={"error": {"message": error_content.decode(), "type": "upstream_error"}}
-                )
-            return StreamingResponse(self._stream_response(upstream_response, target_format, model_name, preset.id if preset else None), media_type="text/event-stream")
+            # 客户端期望流式响应
+            if is_upstream_stream:
+                # 完美情况：上游返回流式，直接代理
+                self.logger.debug(f"[{self.request_id}] 客户端与上游均为流式，直接代理。")
+                return StreamingResponse(self._stream_response(upstream_response, target_format, model_name, preset.id if preset else None), media_type="text/event-stream")
+            else:
+                # 不匹配：上游返回非流式，模拟流式响应
+                self.logger.warning(f"[{self.request_id}] 响应类型不匹配：客户端期望流式，但上游返回非流式。启动流模拟。")
+                return StreamingResponse(self._simulate_stream_from_full_response(upstream_response, target_format, model_name, preset.id if preset else None), media_type="text/event-stream")
         else:
-            return await self._handle_non_stream_response(upstream_response, target_format, model_name, preset.id if preset else None)
+            # 客户端期望非流式响应
+            if is_upstream_stream:
+                # 不匹配：上游返回流式，聚合成完整响应
+                self.logger.warning(f"[{self.request_id}] 响应类型不匹配：客户端期望非流式，但上游返回流式。将聚合流式响应。")
+                full_response = await self._aggregate_stream_response(upstream_response, target_format, model_name)
+                return await self._handle_non_stream_response(full_response, target_format, model_name, preset.id if preset else None)
+            else:
+                # 完美情况：上游返回非流式，直接处理
+                self.logger.debug(f"[{self.request_id}] 客户端与上游均为非流式，直接处理。")
+                return await self._handle_non_stream_response(upstream_response, target_format, model_name, preset.id if preset else None)
 
     async def _stream_response(self, upstream_response, upstream_format: str, model: str, preset_id: Optional[int]):
         if upstream_response.status_code >= 400:
@@ -222,12 +241,21 @@ class PresetProxyService:
         return body, body.get("model")
 
     def _get_provider(self, channel: Channel, official_key: OfficialKey):
+        if self.is_stream_override is not None:
+            is_stream = self.is_stream_override
+        else:
+            # This is a bit of a hack, we need to get the body to check for stream,
+            # but we don't have the request object here. We assume the body is already read in proxy_request
+            # and this is just to determine the provider function signature.
+            # A better solution would be to refactor how providers are called.
+            is_stream = True # Default to stream for provider signature if not overriden
+
         if channel.type == "openai":
             provider = openai_provider.OpenAIProvider(api_key=official_key.key, base_url=channel.api_url)
-            return lambda model, body: provider.create_chat_completion(body)
+            return lambda model, body, is_stream: provider.create_chat_completion(body)
         elif channel.type == "gemini":
             provider = gemini_provider.GeminiProvider(api_key=official_key.key, base_url=channel.api_url)
-            return lambda model, body: provider.generate_content(model, body)
+            return lambda model, body, is_stream: provider.generate_content(model, body, is_stream)
         raise ValueError(f"Unsupported channel type: {channel.type}")
 
     def _convert_chunk(self, chunk: dict, upstream_format: str, model: str):
@@ -272,3 +300,74 @@ class PresetProxyService:
 
         self.logger.warning(f"[{self.request_id}] Unhandled response conversion: {conversion_direction}")
         return response
+
+    async def _simulate_stream_from_full_response(self, upstream_response, upstream_format: str, model: str, preset_id: Optional[int]):
+        """
+        从一个完整的响应体中模拟流式响应。
+        """
+        # 确保我们能处理上游错误
+        if upstream_response.status_code >= 400:
+            error_content = await upstream_response.aread()
+            yield f"data: {json.dumps({'error': {'message': error_content.decode(), 'type': 'upstream_error'}})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        response_json = await upstream_response.json()
+        self.logger.debug(f"[{self.request_id}] 模拟流 - 收到完整JSON: {response_json}")
+
+        # 转换响应体
+        converted_response = self._convert_response(response_json, upstream_format, model)
+        self.logger.debug(f"[{self.request_id}] 模拟流 - 转换后的响应: {converted_response}")
+
+        # 应用后置正则表达式
+        if preset_id:
+            from app.models.preset_regex import PresetRegexRule
+            from sqlalchemy.future import select
+            stmt = select(PresetRegexRule).filter(PresetRegexRule.preset_id == preset_id, PresetRegexRule.type == "post")
+            result = await self.db.execute(stmt)
+            rules = result.scalars().all()
+
+            if rules:
+                if "candidates" in converted_response: # Gemini format
+                    for candidate in converted_response["candidates"]:
+                        if "content" in candidate and "parts" in candidate["content"]:
+                            for part in candidate["content"]["parts"]:
+                                if "text" in part:
+                                    part["text"] = regex_service.process(part["text"], rules)
+                elif "choices" in converted_response: # OpenAI format
+                    for choice in converted_response["choices"]:
+                        if "message" in choice and "content" in choice["message"]:
+                            choice["message"]["content"] = regex_service.process(choice["message"]["content"], rules)
+        
+        self.logger.debug(f"[{self.request_id}] 模拟流 - 发送数据块: {converted_response}")
+        yield f"data: {json.dumps(converted_response)}\n\n"
+        self.logger.debug(f"[{self.request_id}] 模拟流 - 发送 [DONE] 标志")
+        yield "data: [DONE]\n\n"
+
+    async def _aggregate_stream_response(self, upstream_response, upstream_format: str, model: str) -> dict:
+        """
+        将流式响应聚合成一个完整的响应体。
+        """
+        full_response_content = ""
+        # 注意：这里的 _stream_response 是一个生成器，我们需要迭代它来获取数据
+        async for chunk_str in self._stream_response(upstream_response, upstream_format, model, None):
+            if chunk_str.startswith("data:"):
+                content = chunk_str[6:].strip()
+                if content == "[DONE]":
+                    break
+                try:
+                    chunk_json = json.loads(content)
+                    # 提取文本内容并拼接
+                    if self.incoming_format == "openai": # Target is OpenAI
+                        full_response_content += chunk_json.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    elif self.incoming_format == "gemini": # Target is Gemini
+                         full_response_content += chunk_json.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                except (json.JSONDecodeError, IndexError):
+                    continue
+        
+        # 构建一个模拟的完整响应对象
+        if self.incoming_format == "openai":
+            return {"choices": [{"message": {"role": "assistant", "content": full_response_content}}]}
+        elif self.incoming_format == "gemini":
+            return {"candidates": [{"content": {"role": "model", "parts": [{"text": full_response_content}]}}]}
+        return {}
