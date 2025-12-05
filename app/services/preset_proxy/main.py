@@ -79,16 +79,22 @@ class PresetProxyService:
                     msg.content = regex_service.process(msg.content, rules)
 
         # 5. 注入预设
-        general_request.messages = [msg for msg in preset_messages] + [msg.model_dump() for msg in general_request.messages]
+        from app.schemas.openai import Message
+        preset_message_objects = [Message(**msg) for msg in preset_messages]
+        general_request.messages = preset_message_objects + general_request.messages
 
         # 6. 转换为目标渠道格式
         target_format = channel.type
         self.logger.debug(f"[{self.request_id}] Target channel format: {target_format}")
         
+        # 首先，获取一个标准的 OpenAI 请求字典
+        openai_payload = general_request.model_dump(exclude_none=True)
+
         if target_format == "gemini":
-            converted_body, model_name = openai_adapter.to_gemini_request({"messages": general_request.messages, **general_request.model_dump(exclude={"messages"})}, [])
+            # 现在，将这个标准字典转换为 Gemini 格式
+            converted_body, model_name = openai_adapter.to_gemini_request(openai_payload, [])
         else: # OpenAI or compatible
-            converted_body = general_request.model_dump(exclude_none=True)
+            converted_body = openai_payload
             model_name = general_request.model
 
         # 7. 发送请求到上游
