@@ -216,29 +216,37 @@ class PresetProxyService:
         return JSONResponse(content=converted_response)
 
     def _convert_request(self, body: dict, preset_messages: list, target_format: str):
-        # No conversion needed if formats match
+        model_name = body.get("model")
+
+        # 即使格式相同，也需要注入预设
         if self.incoming_format == target_format:
-            self.logger.debug(f"[{self.request_id}] Request format matches channel format ({self.incoming_format}), no conversion needed.")
-            return body, body.get("model")
+            self.logger.debug(f"[{self.request_id}] 格式匹配 ({self.incoming_format})，但仍需注入预设。")
+            
+            if self.incoming_format == "openai":
+                # 合并 OpenAI 消息
+                all_messages = preset_messages + body.get("messages", [])
+                body["messages"] = self._merge_messages(all_messages)
+                return body, model_name
+            
+            elif self.incoming_format == "gemini":
+                # 合并 Gemini contents
+                all_contents = preset_messages + body.get("contents", [])
+                body["contents"] = self._merge_messages(all_contents)
+                return body, model_name
 
+        # --- 格式不同的情况 ---
         conversion_direction = f"{self.incoming_format} -> {target_format}"
-        self.logger.debug(f"[{self.request_id}] Converting request body: {conversion_direction}")
+        self.logger.debug(f"[{self.request_id}] 转换请求体: {conversion_direction}")
 
-        # OpenAI (client) -> Gemini (channel)
         if self.incoming_format == "openai" and target_format == "gemini":
             return openai_adapter.to_gemini_request(body, preset_messages)
         
-        # Gemini (client) -> OpenAI (channel)
         if self.incoming_format == "gemini" and target_format == "openai":
-            if self.is_stream_override is not None:
-                is_stream = self.is_stream_override
-            else:
-                is_stream = body.get("stream", False)
+            is_stream = self.is_stream_override if self.is_stream_override is not None else body.get("stream", False)
             return gemini_adapter.to_openai_request(body, preset_messages, is_stream)
 
-        # Fallback for unhandled conversions
-        self.logger.warning(f"[{self.request_id}] Unhandled request conversion: {conversion_direction}")
-        return body, body.get("model")
+        self.logger.warning(f"[{self.request_id}] 未处理的转换: {conversion_direction}")
+        return body, model_name
 
     def _get_provider(self, channel: Channel, official_key: OfficialKey):
         if self.is_stream_override is not None:
@@ -371,3 +379,27 @@ class PresetProxyService:
         elif self.incoming_format == "gemini":
             return {"candidates": [{"content": {"role": "model", "parts": [{"text": full_response_content}]}}]}
         return {}
+
+    def _merge_messages(self, messages: list) -> list:
+        """
+        合并连续的、角色相同的消息。
+        """
+        if not messages:
+            return []
+
+        merged = [messages[0]]
+        for i in range(1, len(messages)):
+            current_msg = messages[i]
+            last_msg = merged[-1]
+
+            # 检查角色是否相同
+            if current_msg.get("role") == last_msg.get("role"):
+                # 合并 content 或 parts
+                if "content" in last_msg and isinstance(last_msg["content"], str):
+                    last_msg["content"] += "\n" + current_msg.get("content", "")
+                elif "parts" in last_msg and isinstance(last_msg["parts"], list):
+                    last_msg["parts"].extend(current_msg.get("parts", []))
+            else:
+                merged.append(current_msg)
+        
+        return merged
