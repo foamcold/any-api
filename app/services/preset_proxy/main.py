@@ -134,11 +134,16 @@ class PresetProxyService:
                     chunk_data = json.loads(chunk[6:])
                     converted_chunk = self._convert_chunk(chunk_data, upstream_format, model)
                     
+                    if not converted_chunk:
+                        continue
+
                     # Apply regex to content if it exists
-                    if rules and "choices" in converted_chunk:
-                        for choice in converted_chunk["choices"]:
-                            if "delta" in choice and "content" in choice["delta"]:
-                                choice["delta"]["content"] = regex_service.process(choice["delta"]["content"], rules)
+                    if rules and "candidates" in converted_chunk:
+                        for candidate in converted_chunk["candidates"]:
+                            if "content" in candidate and "parts" in candidate["content"]:
+                                for part in candidate["content"]["parts"]:
+                                    if "text" in part:
+                                        part["text"] = regex_service.process(part["text"], rules)
 
                     yield f"data: {json.dumps(converted_chunk)}\n\n"
                 except json.JSONDecodeError:

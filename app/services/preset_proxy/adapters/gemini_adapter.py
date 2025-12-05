@@ -1,4 +1,5 @@
-from typing import Dict, Any, Tuple, List
+import json
+from typing import Dict, Any, Tuple, List, Optional
 
 def to_openai_request(gemini_request: Dict[str, Any], preset_messages: List[Dict[str, str]], is_stream: bool) -> Tuple[Dict[str, Any], str]:
     """
@@ -74,38 +75,49 @@ def from_openai_response(openai_response: Dict[str, Any]) -> Dict[str, Any]:
                 })
     return {"candidates": candidates}
 
-def from_openai_stream_chunk(chunk: Dict[str, Any]) -> Dict[str, Any]:
+def from_openai_stream_chunk(openai_chunk: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    将 OpenAI 流式块转换为 Gemini 流式块。
+    将OpenAI的流式数据块转换为Gemini格式的流式数据块。
     """
-    choices = chunk.get("choices")
-    if not choices:
-        return {}
+    if not openai_chunk.get("choices"):
+        return None
 
-    choice = choices[0]
+    choice = openai_chunk["choices"][0]
     delta = choice.get("delta", {})
-    content = delta.get("content")
-    finish_reason = choice.get("finish_reason")
+    parts = []
 
-    # Gemini 流式响应的核心是 candidate 对象
-    candidate = {}
+    if "content" in delta and delta["content"]:
+        parts.append({"text": delta["content"]})
     
-    # 1. 处理文本内容
-    if content:
-        candidate["content"] = {
-            "parts": [{"text": content}],
-            "role": "model"
-        }
+    if "tool_calls" in delta:
+        for tool_call in delta["tool_calls"]:
+            func = tool_call.get("function", {})
+            parts.append({
+                "functionCall": {
+                    "name": func.get("name"),
+                    "args": json.loads(func.get("arguments", "{}"))
+                }
+            })
+
+    # 如果没有实际内容，并且没有结束原因，则不生成数据块
+    if not parts and not choice.get("finish_reason"):
+        return None
+
+    candidate = {
+        "content": {"parts": parts, "role": "model"},
+        "index": choice.get("index", 0),
+    }
+
+    # 处理结束原因
+    if choice.get("finish_reason"):
+        finish_reason = "STOP"
+        raw_reason = choice.get("finish_reason")
+        if raw_reason == "length": finish_reason = "MAX_TOKENS"
+        elif raw_reason == "content_filter": finish_reason = "SAFETY"
+        candidate["finishReason"] = finish_reason
     
-    # 2. 处理结束原因
-    if finish_reason:
-        # OpenAI 的 'stop' 对应 Gemini 的 'STOP'
-        gemini_finish_reason = "STOP" if finish_reason == "stop" else "FINISH_REASON_UNSPECIFIED"
-        candidate["finishReason"] = gemini_finish_reason
+    # 移除空的 content
+    if not candidate["content"]["parts"]:
+        del candidate["content"]
 
-    # 如果块中既没有内容也没有结束原因，则返回空，避免发送空数据
-    if not candidate:
-        return {}
-
-    # 构建完整的 Gemini 流式块
     return {"candidates": [candidate]}
