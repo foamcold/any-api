@@ -68,7 +68,7 @@ export default function HomePage() {
                             Welcome to Any API
                         </h1>
                         <p className="text-xl text-muted-foreground mb-10 max-w-[800px] mx-auto leading-relaxed">
-                            终极 Gemini API 代理解决方案，配备
+                            终极 LLM API 代理解决方案，配备
                             <span className="text-foreground font-medium">预设管理</span>、
                             <span className="text-foreground font-medium">正则处理</span>、
                             <span className="text-foreground font-medium">渠道管理</span>等高级功能。

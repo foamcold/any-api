@@ -23,6 +23,7 @@ from app.models.regex import RegexRule
 from app.models.preset_regex import PresetRegexRule
 from app.services.token_service import token_service
 from app.services.log_and_stat_service import update_key_and_log_usage
+from app.core.errors import create_openai_error_response, create_error_from_upstream
 from sqlalchemy.future import select
 
 
@@ -109,12 +110,20 @@ class PresetProxyService:
             channel = self.exclusive_key_obj.channel
             if not channel:
                 self.logger.error(f"[{self.request_id}] 专属密钥 {self.exclusive_key_obj.id} 未绑定渠道。")
-                return JSONResponse(status_code=400, content={"error": "Exclusive key is not associated with a channel."})
+                return create_openai_error_response(
+                    message="Exclusive key is not associated with a channel.",
+                    error_type="invalid_request_error",
+                    status_code=400
+                )
             
             official_key = await gemini_service.get_active_key(self.db, channel.id)
             if not official_key:
                 self.logger.error(f"[{self.request_id}] 渠道 {channel.id} 无可用官方密钥。")
-                return JSONResponse(status_code=500, content={"error": "No active official key available for the channel."})
+                return create_openai_error_response(
+                    message="No active official key available for the channel.",
+                    error_type="api_error",
+                    status_code=500
+                )
 
             preset = self.exclusive_key_obj.preset
             preset_id = preset.id if preset else None
@@ -143,7 +152,11 @@ class PresetProxyService:
             if upstream_response.status_code >= 400:
                 error_content = await upstream_response.aread()
                 await self._log_and_update(official_key, model_name, final_input_messages, "", latency, upstream_response.status_code, "error")
-                return JSONResponse(status_code=upstream_response.status_code, content=json.loads(error_content))
+                return create_error_from_upstream(
+                    status_code=upstream_response.status_code,
+                    upstream_body=error_content,
+                    target_format=self.incoming_format
+                )
 
             if is_upstream_stream:
                 self.logger.debug(f"[{self.request_id}] 开始处理上游流式响应。")
@@ -171,7 +184,11 @@ class PresetProxyService:
             if official_key:
                  await self._log_and_update(official_key, original_model, body.get("messages", []), "", latency, 500, "error")
 
-            return JSONResponse(status_code=500, content={"error": "An unexpected error occurred in PresetProxyService."})
+            return create_openai_error_response(
+                message="An unexpected error occurred in PresetProxyService.",
+                error_type="api_error",
+                status_code=500
+            )
 
     async def _stream_response(self, upstream_response, upstream_format: str, model: str, preset_id: Optional[int], final_input_messages: list, start_time: float, official_key: OfficialKey):
         ttft = 0.0
@@ -434,10 +451,18 @@ class PresetProxyService:
         self.logger.debug(f"[{self.request_id}] 传递查询参数: {params}")
         channel = self.exclusive_key_obj.channel
         if not channel:
-            return JSONResponse(status_code=404, content={"error": "Exclusive key is not associated with a channel."})
+            return create_openai_error_response(
+                message="Exclusive key is not associated with a channel.",
+                error_type="invalid_request_error",
+                status_code=404
+            )
         official_key = await gemini_service.get_active_key(self.db, channel.id)
         if not official_key:
-            return JSONResponse(status_code=500, content={"error": "No active official key available for the channel."})
+            return create_openai_error_response(
+                message="No active official key available for the channel.",
+                error_type="api_error",
+                status_code=500
+            )
         provider = self._get_provider_for_models(channel, official_key)
         upstream_response = await provider.list_models(params=params)
         if upstream_response.status_code >= 400:
@@ -531,9 +556,14 @@ class PresetProxyService:
         
         if upstream_response.status_code >= 400:
             error_content = await upstream_response.aread()
-            error_payload = {"error": json.loads(error_content)}
             await self._log_and_update(official_key, model_name, final_input_messages, "", latency, upstream_response.status_code, "error", is_stream=True)
-            yield f"data: {json.dumps(error_payload)}\n\n"
+            
+            error_response = create_error_from_upstream(
+                status_code=upstream_response.status_code,
+                upstream_body=error_content,
+                target_format=self.incoming_format
+            )
+            yield f"data: {error_response.body.decode()}\n\n"
             yield "data: [DONE]\n\n"
             return
 

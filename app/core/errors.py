@@ -9,8 +9,66 @@ from typing import Dict, Any, Literal
 import json
 import time
 import uuid
+from fastapi.responses import JSONResponse
 
 ApiFormat = Literal["openai", "gemini"]
+
+
+def create_openai_error_response(
+    message: str,
+    error_type: str = "api_error",
+    code: str = None,
+    param: str = None,
+    status_code: int = 500
+) -> JSONResponse:
+    """
+    创建并返回一个标准 OpenAI 格式的 JSONResponse 错误。
+    """
+    error_content = APIError.openai_error(
+        message=message,
+        error_type=error_type,
+        code=code,
+        param=param
+    )
+    return JSONResponse(status_code=status_code, content=error_content)
+
+
+def create_error_from_upstream(
+    status_code: int,
+    upstream_body: bytes,
+    target_format: ApiFormat = "openai"
+) -> JSONResponse:
+    """
+    从上游服务的原始错误响应中创建并返回一个标准格式的 JSONResponse 错误。
+    """
+    try:
+        upstream_error = json.loads(upstream_body)
+        # 假设上游错误体中有一个 'error' 字段
+        error_detail = upstream_error.get("error", {})
+        message = error_detail.get("message", "上游服务返回未知错误")
+        
+        # 尝试从上游错误中提取更多信息
+        error_type = error_detail.get("type", "api_error")
+        code = error_detail.get("code")
+
+    except (json.JSONDecodeError, AttributeError):
+        message = f"上游服务返回无效的错误格式: {upstream_body.decode('utf-8', errors='ignore')}"
+        error_type = "api_error"
+        code = None
+
+    if target_format == "openai":
+        return create_openai_error_response(
+            message=message,
+            error_type=error_type,
+            code=code,
+            status_code=status_code
+        )
+    else:
+        # 对于其他格式，可以稍后扩展
+        return create_openai_error_response(
+            message=message,
+            status_code=status_code
+        )
 
 
 class APIError:

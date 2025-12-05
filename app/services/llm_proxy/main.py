@@ -13,6 +13,7 @@ from app.models.system_config import SystemConfig
 from app.services.llm_proxy.adapters import openai_adapter, gemini_adapter
 from app.services.llm_proxy.providers import openai_provider, gemini_provider
 from app.core.config import settings
+from app.core.errors import create_error_from_upstream
 
 class LLMProxyService:
     def __init__(
@@ -85,7 +86,11 @@ class LLMProxyService:
 
         if upstream_response.status_code >= 400:
             error_content = await upstream_response.aread()
-            return JSONResponse(status_code=upstream_response.status_code, content=json.loads(error_content))
+            return create_error_from_upstream(
+                status_code=upstream_response.status_code,
+                upstream_body=error_content,
+                target_format=self.incoming_format
+            )
 
         if is_upstream_stream:
             self.logger.debug(f"[{self.request_id}] 上游响应是流式。开始转换响应流。")
@@ -260,8 +265,13 @@ class LLMProxyService:
         
         if upstream_response.status_code >= 400:
             error_content = await upstream_response.aread()
-            error_payload = {"error": json.loads(error_content)}
-            yield f"data: {json.dumps(error_payload)}\n\n"
+            # 对于流，我们直接将错误信息包装在 data 块中
+            error_response = create_error_from_upstream(
+                status_code=upstream_response.status_code,
+                upstream_body=error_content,
+                target_format=self.incoming_format
+            )
+            yield f"data: {error_response.body.decode()}\n\n"
             yield "data: [DONE]\n\n"
             return
 
