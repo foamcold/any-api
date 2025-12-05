@@ -43,17 +43,21 @@ def to_gemini_request(openai_request: Dict[str, Any], preset_messages: List[Dict
     
     # 2. 分离 system 指令
     system_parts = []
-    other_messages = []
+    user_model_messages = []
     for msg in merged_messages:
         if msg["role"] == "system":
             system_parts.append({"text": msg["content"]})
         else:
-            other_messages.append(msg)
+            user_model_messages.append(msg)
     logger.debug(f"分离出的系统指令: {system_parts}")
-    logger.debug(f"剩余的用户/模型消息: {other_messages}")
+    logger.debug(f"分离出的用户/模型消息: {user_model_messages}")
 
-    # 3. 转换为 Gemini contents 格式
-    for msg in other_messages:
+    # 3. 对剩余消息进行二次合并，以处理 [user, system, user] -> [user, user] 的情况
+    final_user_model_messages = _merge_messages(user_model_messages)
+    logger.debug(f"二次合并后的最终用户/模型消息: {final_user_model_messages}")
+
+    # 4. 转换为 Gemini contents 格式
+    for msg in final_user_model_messages:
         role = "user" if msg["role"] == "user" else "model"
         contents.append({"role": role, "parts": [{"text": msg["content"]}]})
     logger.debug(f"转换为 Gemini contents 的最终内容: {contents}")
