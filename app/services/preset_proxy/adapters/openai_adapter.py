@@ -72,7 +72,11 @@ def to_gemini_request(openai_request: Dict[str, Any], preset_messages: List[Dict
         }
     }
     if system_parts:
-        payload["system_instruction"] = {"parts": system_parts}
+        # 合并所有 system_parts 的内容到一个 text 中，以提高兼容性
+        combined_system_text = "\n".join(p.get("text", "") for p in system_parts)
+        payload["system_instruction"] = {
+            "parts": [{"text": combined_system_text}]
+        }
     
     model_name = openai_request.get("model", "gemini-1.5-pro")
     logger.debug(f"最终发送给上游的 payload: {payload}")
