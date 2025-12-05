@@ -63,8 +63,8 @@ export default function LogsPage() {
                         <thead className="bg-muted text-muted-foreground">
                             <tr>
                                 <th className="p-4 font-medium whitespace-nowrap">时间</th>
-                                <th className="p-4 font-medium whitespace-nowrap">密钥</th>
                                 <th className="p-4 font-medium whitespace-nowrap">模型</th>
+                                <th className="p-4 font-medium whitespace-nowrap">密钥</th>
                                 <th className="p-4 font-medium whitespace-nowrap">状态</th>
                                 <th className="p-4 font-medium whitespace-nowrap">延迟</th>
                                 <th className="p-4 font-medium whitespace-nowrap">首Token时间</th>
@@ -84,10 +84,10 @@ export default function LogsPage() {
                                         <td className="p-4 whitespace-nowrap">
                                             {format(toZonedTime(new Date(log.created_at), 'Asia/Shanghai'), 'yyyy-MM-dd HH:mm:ss')}
                                         </td>
-                                        <td className="p-4 font-mono text-xs max-w-[150px] truncate" title={log.exclusive_key_key || log.official_key_key}>
-                                            {log.exclusive_key_key ? <MaskedKey apiKey={log.exclusive_key_key} /> : (log.official_key_key ? <MaskedKey apiKey={log.official_key_key} /> : '-')}
-                                        </td>
                                         <td className="p-4">{log.model}</td>
+                                        <td className="p-4 font-mono text-xs" title={log.exclusive_key_key || log.official_key_key}>
+                                            <MaskedKey apiKey={log.exclusive_key_key || log.official_key_key || ''} />
+                                        </td>
                                         <td className="p-4">
                                             <span className={cn(
                                                 "px-2 py-1 rounded text-xs",

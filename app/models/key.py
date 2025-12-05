@@ -3,45 +3,8 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
-import tiktoken
 from sqlalchemy import UniqueConstraint
 from typing import List, Dict, Any
-
-# --- Tokenizer Utility ---
-#
-# Consider moving this to a separate utility file if it grows.
-# For now, keeping it here for simplicity.
-
-_cached_encoders = {}
-
-def get_tokenizer(model_name: str = "gpt-3.5-turbo"):
-    """
-    Returns a tiktoken encoder for the given model name.
-    Caches encoders to avoid re-initializing them.
-    """
-    if model_name not in _cached_encoders:
-        try:
-            _cached_encoders[model_name] = tiktoken.encoding_for_model(model_name)
-        except KeyError:
-            # Fallback for models not explicitly supported by tiktoken
-            _cached_encoders[model_name] = tiktoken.get_encoding("cl100k_base")
-    return _cached_encoders[model_name]
-
-def count_tokens_for_messages(messages: List[Dict[str, Any]], model_name: str = "gpt-3.5-turbo") -> int:
-    """
-    Calculates the number of tokens for a list of messages based on OpenAI's format.
-    """
-    tokenizer = get_tokenizer(model_name)
-    num_tokens = 0
-    for message in messages:
-        num_tokens += 4  # every message follows <im_start>{role/name}\n{content}<im_end>\n
-        for key, value in message.items():
-            if value:
-                num_tokens += len(tokenizer.encode(str(value)))
-            if key == "name":
-                num_tokens -= 1  # if there's a name, the role is omitted
-    num_tokens += 2  # every reply is primed with <im_start>assistant
-    return num_tokens
 
 # --- Models ---
 
