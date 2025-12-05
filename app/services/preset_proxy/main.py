@@ -55,8 +55,8 @@ class PresetProxyService:
         self.logger.debug(f"[{self.request_id}] 原始模型: {original_model}, 客户端期望流式: {client_wants_stream}, 上游将使用流式: {is_upstream_stream}")
 
         # 只要是伪流请求，就强制进入模拟流
-        if is_pseudo_stream:
-            self.logger.debug(f"[{self.request_id}] 检测到伪流请求，启动模拟流响应。")
+        if is_pseudo_stream and client_wants_stream:
+            self.logger.debug(f"[{self.request_id}] 检测到伪流请求，且客户端需要流式响应，启动模拟流响应。")
             return StreamingResponse(
                 self._simulate_stream_response(body, original_model),
                 media_type="text/event-stream"
