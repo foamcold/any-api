@@ -108,10 +108,16 @@ class PresetProxyService:
         preset = self.exclusive_key_obj.preset
         preset_id = preset.id if preset else None
 
-        # 预处理用户输入
-        for msg in body.get("messages", []):
-            if "content" in msg and isinstance(msg["content"], str):
-                msg["content"] = await self._apply_all_rules(msg["content"], "pre", preset_id)
+        # 预处理用户输入 (统一处理 messages 和 contents)
+        if self.incoming_format == "openai":
+            for msg in body.get("messages", []):
+                if "content" in msg and isinstance(msg["content"], str):
+                    msg["content"] = await self._apply_all_rules(msg["content"], "pre", preset_id)
+        elif self.incoming_format == "gemini":
+            for content in body.get("contents", []):
+                for part in content.get("parts", []):
+                    if "text" in part:
+                        part["text"] = await self._apply_all_rules(part["text"], "pre", preset_id)
 
         preset_messages = []
         preset_model: Optional[str] = None
@@ -205,11 +211,17 @@ class PresetProxyService:
         response_json = upstream_response.json()
         converted_response = self._convert_response(response_json, upstream_format, model, is_stream=False)
         
-        # 后处理
-        if "choices" in converted_response:
+        # 后处理 (统一处理 openai 和 gemini 格式)
+        if "choices" in converted_response: # OpenAI 格式
             for choice in converted_response["choices"]:
                 if "message" in choice and "content" in choice["message"] and choice["message"]["content"]:
                     choice["message"]["content"] = await self._apply_all_rules(choice["message"]["content"], "post", preset_id)
+        elif "candidates" in converted_response: # Gemini 格式
+            for candidate in converted_response["candidates"]:
+                if "content" in candidate and "parts" in candidate["content"]:
+                    for part in candidate["content"]["parts"]:
+                        if "text" in part:
+                            part["text"] = await self._apply_all_rules(part["text"], "post", preset_id)
 
         return JSONResponse(content=converted_response)
 
@@ -344,51 +356,49 @@ class PresetProxyService:
         channel = self.exclusive_key_obj.channel
         official_key = await gemini_service.get_active_key(self.db, channel.id)
         target_format = channel.type
-        
         preset = self.exclusive_key_obj.preset
+        preset_id = preset.id if preset else None
+
+        # --- 1. 预处理 ---
+        if self.incoming_format == "openai":
+            for msg in body.get("messages", []):
+                if "content" in msg and isinstance(msg["content"], str):
+                    msg["content"] = await self._apply_all_rules(msg["content"], "pre", preset_id)
+        elif self.incoming_format == "gemini":
+            for content in body.get("contents", []):
+                for part in content.get("parts", []):
+                    if "text" in part:
+                        part["text"] = await self._apply_all_rules(part["text"], "pre", preset_id)
+        
         preset_messages = []
         if preset:
             messages_data = json.loads(preset.content)
             messages = messages_data.get('preset', messages_data.get('messages', [])) if isinstance(messages_data, dict) else messages_data if isinstance(messages_data, list) else []
             for msg in messages:
                 if "content" in msg and isinstance(msg["content"], str):
-                    msg["content"] = variable_service.parse_variables(msg["content"])
+                    original_content = msg["content"]
+                    processed_content = variable_service.parse_variables(original_content)
+                    if original_content != processed_content:
+                        self.logger.debug(f"[{self.request_id}] 预设内容变量处理: '{original_content}' -> '{processed_content}'")
+                        msg["content"] = processed_content
             preset_messages = messages
 
         converted_body, model_name = self._convert_request(body, preset_messages, target_format)
 
+        # --- 2. 请求上游 ---
         send_request_func = self._get_provider_for_chat(channel, official_key)
         upstream_task = asyncio.create_task(send_request_func(model_name, converted_body, False))
 
+        # --- 3. 发送心跳包 ---
         while not upstream_task.done():
             self.logger.debug(f"[{self.request_id}] 伪流: 发送心跳包。")
-            
             heartbeat_chunk = {}
             if self.incoming_format == "openai":
-                # 构造 OpenAI 格式的空流式块
-                heartbeat_chunk = {
-                    "id": f"chatcmpl-heartbeat-{uuid.uuid4()}",
-                    "object": "chat.completion.chunk",
-                    "created": int(asyncio.get_event_loop().time()),
-                    "model": original_model,
-                    "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": None}]
-                }
+                heartbeat_chunk = {"id": f"chatcmpl-heartbeat-{uuid.uuid4()}", "object": "chat.completion.chunk", "created": int(asyncio.get_event_loop().time()), "model": original_model, "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": None}]}
             elif self.incoming_format == "gemini":
-                # 构造 Gemini 格式的空流式块
-                heartbeat_chunk = {
-                    "candidates": [{
-                        "content": {
-                            "parts": [{"text": ""}],
-                            "role": "model"
-                        },
-                        "finishReason": None,
-                        "index": 0
-                    }]
-                }
-
+                heartbeat_chunk = {"candidates": [{"content": {"parts": [{"text": ""}], "role": "model"}, "finishReason": None, "index": 0}]}
             if heartbeat_chunk:
                 yield f"data: {json.dumps(heartbeat_chunk)}\n\n"
-            
             await asyncio.sleep(1)
 
         upstream_response = await upstream_task
@@ -400,24 +410,26 @@ class PresetProxyService:
             yield "data: [DONE]\n\n"
             return
 
+        # --- 4. 后处理 ---
         response_json = upstream_response.json()
         final_response = self._convert_response(response_json, target_format, original_model, is_stream=False)
         
-        self.logger.debug(f"[{self.request_id}] 伪流: 将完整响应包装为流式块。")
+        if "choices" in final_response: # OpenAI 格式
+            for choice in final_response["choices"]:
+                if "message" in choice and "content" in choice["message"] and choice["message"]["content"]:
+                    choice["message"]["content"] = await self._apply_all_rules(choice["message"]["content"], "post", preset_id)
+        elif "candidates" in final_response: # Gemini 格式
+            for candidate in final_response["candidates"]:
+                if "content" in candidate and "parts" in candidate["content"]:
+                    for part in candidate["content"]["parts"]:
+                        if "text" in part:
+                            part["text"] = await self._apply_all_rules(part["text"], "post", preset_id)
 
+        # --- 5. 模拟流式返回 ---
+        self.logger.debug(f"[{self.request_id}] 伪流: 将完整响应包装为流式块。")
         if self.incoming_format == "openai":
             for i, choice in enumerate(final_response.get("choices", [])):
-                chunk = {
-                    "id": final_response.get("id"),
-                    "object": "chat.completion.chunk",
-                    "created": final_response.get("created"),
-                    "model": final_response.get("model"),
-                    "choices": [{
-                        "index": i,
-                        "delta": {"content": choice.get("message", {}).get("content", "")},
-                        "finish_reason": choice.get("finish_reason")
-                    }]
-                }
+                chunk = {"id": final_response.get("id"), "object": "chat.completion.chunk", "created": final_response.get("created"), "model": final_response.get("model"), "choices": [{"index": i, "delta": {"content": choice.get("message", {}).get("content", "")}, "finish_reason": choice.get("finish_reason")}]}
                 yield f"data: {json.dumps(chunk)}\n\n"
         else:
              yield f"data: {json.dumps(final_response)}\n\n"
