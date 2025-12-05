@@ -193,3 +193,22 @@ def parse_data_url(data_url: str) -> Dict[str, Any]:
         }
     except Exception:
         return {}
+
+def from_gemini_to_openai_models(gemini_models_response: Dict[str, Any]) -> Dict[str, Any]:
+   """
+   将Gemini格式的模型列表转换为OpenAI格式。
+   """
+   openai_models = []
+   for model in gemini_models_response.get("models", []):
+       model_id = model.get("name", "").split('/')[-1]
+       openai_models.append({
+           "id": model_id,
+           "object": "model",
+           "created": 0, # OpenAI API需要此字段，但Gemini不提供，设为0
+           "owned_by": "google"
+       })
+   
+   return {
+       "object": "list",
+       "data": openai_models
+   }

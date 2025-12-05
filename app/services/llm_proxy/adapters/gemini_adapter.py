@@ -158,3 +158,26 @@ def from_openai_stream_chunk(openai_chunk: Dict[str, Any]) -> Optional[Dict[str,
         candidate["finishReason"] = finish_reason
 
     return {"candidates": [candidate]}
+
+def from_openai_to_gemini_models(openai_models_response: Dict[str, Any]) -> Dict[str, Any]:
+   """
+   将OpenAI格式的模型列表转换为Gemini格式。
+   """
+   gemini_models = []
+   for model in openai_models_response.get("data", []):
+       gemini_models.append({
+           "name": f"models/{model.get('id')}",
+           "version": "0.0.1", # Gemini需要此字段，但OpenAI不提供
+           "displayName": model.get('id'),
+           "description": f"Model {model.get('id')} provided by OpenAI.",
+           "inputTokenLimit": 8192, # 默认值
+           "outputTokenLimit": 2048, # 默认值
+           "supportedGenerationMethods": [
+               "generateContent",
+               "streamGenerateContent"
+           ],
+       })
+   
+   return {
+       "models": gemini_models
+   }

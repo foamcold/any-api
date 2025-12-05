@@ -24,3 +24,20 @@ class OpenAIProvider:
         except httpx.RequestError as e:
             error_body = {"error": {"message": f"Upstream request failed: {e}", "type": "connection_error"}}
             return httpx.Response(status_code=502, json=error_body, request=request)
+
+    async def list_models(self, params=None) -> httpx.Response:
+        client = httpx.AsyncClient()
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        url = f"{self.base_url}/v1/models"
+        
+        request = client.build_request("GET", url, headers=headers, params=params, timeout=300)
+        
+        try:
+            response = await client.send(request)
+            return response
+        except httpx.RequestError as e:
+            error_body = {"error": {"message": f"Upstream request failed: {e}", "type": "connection_error"}}
+            return httpx.Response(status_code=502, json=error_body, request=request)

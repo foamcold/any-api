@@ -151,3 +151,34 @@ class LLMProxyService:
         
         # 同构透传
         return response_json
+
+    async def proxy_list_models(self, request: Request):
+        """
+        代理模型列表请求，并传递查询参数。
+        """
+        self.logger.debug(f"[{self.request_id}] 代理模型列表请求。流程: {self.incoming_format} -> {self.target_provider}")
+        
+        params = request.query_params
+        self.logger.debug(f"[{self.request_id}] 传递查询参数: {params}")
+
+        provider = self._get_provider()
+        upstream_response = await provider.list_models(params=params)
+
+        if upstream_response.status_code >= 400:
+            error_content = await upstream_response.aread()
+            return JSONResponse(status_code=upstream_response.status_code, content=json.loads(error_content))
+
+        response_json = upstream_response.json()
+        
+        # 根据需要转换模型列表的格式
+        if self.target_provider == "gemini" and self.incoming_format == "openai":
+            self.logger.debug(f"[{self.request_id}] 模型列表转换: Gemini -> OpenAI")
+            final_response = openai_adapter.from_gemini_to_openai_models(response_json)
+        elif self.target_provider == "openai" and self.incoming_format == "gemini":
+            self.logger.debug(f"[{self.request_id}] 模型列表转换: OpenAI -> Gemini")
+            final_response = gemini_adapter.from_openai_to_gemini_models(response_json)
+        else:
+            # 同构透传，无需转换
+            final_response = response_json
+        
+        return JSONResponse(content=final_response)

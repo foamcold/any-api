@@ -10,7 +10,7 @@ from app.models.key import ExclusiveKey, OfficialKey
 from app.models.user import User
 from app.models.channel import Channel
 from app.models.preset import Preset
-from app.services.preset_proxy.adapters import openai_adapter, gemini_adapter
+from app.services.llm_proxy.adapters import openai_adapter, gemini_adapter
 from app.services.preset_proxy.providers import openai_provider, gemini_provider
 from app.services.preset_proxy.utils import _merge_messages
 from app.services.variable_service import variable_service
@@ -107,7 +107,7 @@ class PresetProxyService:
         else:
             is_stream = body.get("stream", False)
             
-        send_request_func = self._get_provider(channel, official_key)
+        send_request_func = self._get_provider_for_chat(channel, official_key)
         upstream_response = await send_request_func(model_name, converted_body, is_stream)
 
         # 6. 处理响应
@@ -283,7 +283,7 @@ class PresetProxyService:
         self.logger.warning(f"[{self.request_id}] 未处理的转换: {conversion_direction}")
         return body, model_name
 
-    def _get_provider(self, channel: Channel, official_key: OfficialKey):
+    def _get_provider_for_chat(self, channel: Channel, official_key: OfficialKey):
         if self.is_stream_override is not None:
             is_stream = self.is_stream_override
         else:
@@ -415,3 +415,55 @@ class PresetProxyService:
             return {"candidates": [{"content": {"role": "model", "parts": [{"text": full_response_content}]}}]}
         return {}
 
+    async def proxy_list_models(self, request: Request):
+        """
+        为预设模式代理模型列表请求，并传递查询参数。
+        该方法现在将请求直接透传到与渠道关联的上游服务。
+        """
+        self.logger.debug(f"[{self.request_id}] 代理预设模式的模型列表请求（透传模式）。")
+        
+        params = request.query_params
+        self.logger.debug(f"[{self.request_id}] 传递查询参数: {params}")
+
+        channel = self.exclusive_key_obj.channel
+        if not channel:
+            return JSONResponse(status_code=404, content={"error": "Exclusive key is not associated with a channel."})
+
+        official_key = await gemini_service.get_active_key(self.db, channel.id)
+        if not official_key:
+            return JSONResponse(status_code=500, content={"error": "No active official key available for the channel."})
+
+        provider = self._get_provider_for_models(channel, official_key)
+        upstream_response = await provider.list_models(params=params)
+
+        if upstream_response.status_code >= 400:
+            error_content = await upstream_response.aread()
+            return JSONResponse(status_code=upstream_response.status_code, content=json.loads(error_content))
+
+        response_json = upstream_response.json()
+
+        # 根据需要转换模型列表的格式
+        target_format = channel.type
+        if target_format == "gemini" and self.incoming_format == "openai":
+            self.logger.debug(f"[{self.request_id}] 模型列表转换: Gemini -> OpenAI")
+            from app.services.llm_proxy.adapters import openai_adapter # 复用LLM Proxy的adapter
+            final_response = openai_adapter.from_gemini_to_openai_models(response_json)
+        elif target_format == "openai" and self.incoming_format == "gemini":
+            self.logger.debug(f"[{self.request_id}] 模型列表转换: OpenAI -> Gemini")
+            from app.services.llm_proxy.adapters import gemini_adapter # 复用LLM Proxy的adapter
+            final_response = gemini_adapter.from_openai_to_gemini_models(response_json)
+        else:
+            # 同构透传，无需转换
+            final_response = response_json
+
+        return JSONResponse(content=final_response)
+
+    def _get_provider_for_models(self, channel: Channel, official_key: OfficialKey):
+        """
+        根据渠道类型为模型列表请求实例化并返回一个Provider。
+        """
+        if channel.type == "openai":
+            return openai_provider.OpenAIProvider(api_key=official_key.key, base_url=channel.api_url)
+        elif channel.type == "gemini":
+            return gemini_provider.GeminiProvider(api_key=official_key.key, base_url=channel.api_url)
+        raise ValueError(f"Unsupported channel type for listing models: {channel.type}")

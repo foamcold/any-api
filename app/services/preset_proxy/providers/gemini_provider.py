@@ -24,3 +24,20 @@ class GeminiProvider:
         except httpx.RequestError as e:
             error_body = {"error": {"message": f"Upstream request failed: {e}", "type": "connection_error"}}
             return httpx.Response(status_code=502, json=error_body, request=request)
+
+    async def list_models(self, params=None) -> httpx.Response:
+        client = httpx.AsyncClient()
+        url = f"{self.base_url}/v1beta/models"
+        headers = {
+            "x-goog-api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
+        
+        request = client.build_request("GET", url, headers=headers, params=params, timeout=300)
+        
+        try:
+            response = await client.send(request)
+            return response
+        except httpx.RequestError as e:
+            error_body = {"error": {"message": f"Upstream request failed: {e}", "type": "connection_error"}}
+            return httpx.Response(status_code=502, json=error_body, request=request)

@@ -41,3 +41,23 @@ class OpenAIProvider:
             # 对于网络层面的错误，构建一个httpx.Response对象以保持接口统一
             error_body = {"error": {"message": f"Upstream request failed: {e}", "type": "connection_error"}}
             return httpx.Response(status_code=502, json=error_body, request=request)
+
+    async def list_models(self, params=None):
+        """
+        向上游请求模型列表，并传递查询参数。
+        """
+        url = f"{self.base_url}/v1/models"
+        headers = self.get_headers()
+        
+        request = self.client.build_request("GET", url, headers=headers, params=params)
+        
+        try:
+            response = await self.client.send(request)
+            response.raise_for_status()
+            return response
+        except httpx.HTTPStatusError as e:
+            await e.response.aread()
+            return e.response
+        except httpx.RequestError as e:
+            error_body = {"error": {"message": f"Upstream request failed: {e}", "type": "connection_error"}}
+            return httpx.Response(status_code=502, json=error_body, request=request)
