@@ -29,18 +29,6 @@ async def chat_completions(
     if system_config and system_config.pseudo_streaming_enabled and model_name.startswith("伪流/"):
         is_pseudo_stream = True
         body["model"] = model_name.replace("伪流/", "", 1)
-        # 重新构建请求以更新body
-        _body_bytes = json.dumps(body).encode('utf-8')
-        
-        _stream_sent = False
-        async def receive():
-            nonlocal _stream_sent
-            if not _stream_sent:
-                _stream_sent = True
-                return {'type': 'http.request', 'body': _body_bytes, 'more_body': False}
-            return {'type': 'http.disconnect'}
-        
-        request = Request(request.scope, receive=receive)
 
     is_stream_override = False if is_pseudo_stream else None
 
@@ -54,7 +42,7 @@ async def chat_completions(
             incoming_format="openai",
             is_stream_override=is_stream_override
         )
-        return await service.proxy_request(request, is_pseudo_stream)
+        return await service.proxy_request(body, is_pseudo_stream)
     else:
         logger.debug("检测到非 gapi- 密钥，正在分派到 LLMProxyService...")
         if client_key.startswith("sk-"):
@@ -72,7 +60,7 @@ async def chat_completions(
             target_provider=target_provider,
             is_stream_override=is_stream_override
         )
-        return await proxy_service.proxy_request(request, is_pseudo_stream)
+        return await proxy_service.proxy_request(body, is_pseudo_stream)
 
 @router.get("/models")
 async def list_models(

@@ -33,13 +33,12 @@ class LLMProxyService:
         self.request_id = str(uuid.uuid4())
         self.logger = logging.getLogger(__name__)
 
-    async def proxy_request(self, request: Request, is_pseudo_stream: bool = False):
+    async def proxy_request(self, body: dict, is_pseudo_stream: bool = False):
         """
         统一处理代理请求的核心方法。
         """
         self.logger.debug(f"[{self.request_id}] 接收到新请求。流程: {self.incoming_format} -> {self.target_provider}")
         
-        body = await request.json()
         original_model = body.get("model", "unknown")
         
         client_wants_stream = body.get("stream", False)

@@ -25,6 +25,9 @@ async def generate_content(
 
     logger.debug(f"路由 /v1beta/models：准备根据密钥类型分派。客户端密钥: '{client_key}'")
 
+    body = await request.json()
+    is_client_stream = ":streamGenerateContent" in model_and_action
+
     # 检查是否为伪流请求
     model_name = model_and_action.split(":")[0]
     is_pseudo_stream = False
@@ -33,26 +36,12 @@ async def generate_content(
         true_model_name = model_name.replace("伪流/", "", 1)
         model_and_action = f"{true_model_name}:{model_and_action.split(':')[1]}"
 
-    is_stream_override = False if is_pseudo_stream else (":streamGenerateContent" in model_and_action)
+    # 确定对上游的流式覆盖。伪流模式下，上游必须是非流式。
+    is_stream_override = False if is_pseudo_stream else is_client_stream
 
-    # 重新构建请求以包含正确的模型名称
-    body = await request.json()
+    # 更新 body
     body['model'] = model_and_action.split(":")[0]
-    body['stream'] = is_stream_override
-    _body_bytes = json.dumps(body).encode('utf-8')
-    
-    _stream_sent = False
-    async def receive():
-        nonlocal _stream_sent
-        if not _stream_sent:
-            _stream_sent = True
-            return {'type': 'http.request', 'body': _body_bytes, 'more_body': False}
-        return {'type': 'http.disconnect'}
-    
-    # 确保在重新构建请求时，传递的是一个可等待的 receive 函数
-    new_scope = request.scope.copy()
-    new_scope['headers'] = request.headers.raw
-    new_request = Request(scope=new_scope, receive=receive)
+    body['stream'] = is_client_stream
 
     if client_key.startswith("gapi-"):
         logger.debug("检测到 gapi- 密钥，正在分派到 PresetProxyService...")
@@ -65,7 +54,7 @@ async def generate_content(
             incoming_format="gemini",
             is_stream_override=is_stream_override
         )
-        return await service.proxy_request(new_request, is_pseudo_stream)
+        return await service.proxy_request(body, is_pseudo_stream)
     else:
         logger.debug("检测到非 gapi- 密钥，正在分派到 LLMProxyService...")
         if client_key.startswith("AIza"):
@@ -83,7 +72,7 @@ async def generate_content(
             target_provider=target_provider,
             is_stream_override=is_stream_override
         )
-        return await proxy_service.proxy_request(new_request, is_pseudo_stream)
+        return await proxy_service.proxy_request(body, is_pseudo_stream)
 
 @router.get("/models")
 async def list_models(

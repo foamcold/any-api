@@ -37,13 +37,12 @@ class PresetProxyService:
         self.logger = logging.getLogger(__name__)
         self.logger.debug(f"[{self.request_id}] PresetProxyService initialized for incoming format: {self.incoming_format}")
 
-    async def proxy_request(self, request: Request, is_pseudo_stream: bool = False):
+    async def proxy_request(self, body: dict, is_pseudo_stream: bool = False):
         """
         统一处理预设模式代理请求的核心方法。
         """
         self.logger.debug(f"[{self.request_id}] 接收到新的预设模式请求。")
 
-        body = await request.json()
         original_model = body.get("model", "unknown")
         client_wants_stream = body.get("stream", False)
 
