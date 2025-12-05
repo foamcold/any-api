@@ -227,15 +227,33 @@ class LLMProxyService:
 
         while not upstream_task.done():
             self.logger.debug(f"[{self.request_id}] 伪流: 发送心跳包。")
-            # 发送一个空的 content 块作为心跳包
-            heartbeat_chunk = {
-                "id": f"chatcmpl-heartbeat-{uuid.uuid4()}",
-                "object": "chat.completion.chunk",
-                "created": int(asyncio.get_event_loop().time()),
-                "model": original_model,
-                "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": None}]
-            }
-            yield f"data: {json.dumps(heartbeat_chunk)}\n\n"
+            
+            heartbeat_chunk = {}
+            if self.incoming_format == "openai":
+                # 构造 OpenAI 格式的空流式块
+                heartbeat_chunk = {
+                    "id": f"chatcmpl-heartbeat-{uuid.uuid4()}",
+                    "object": "chat.completion.chunk",
+                    "created": int(asyncio.get_event_loop().time()),
+                    "model": original_model,
+                    "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": None}]
+                }
+            elif self.incoming_format == "gemini":
+                # 构造 Gemini 格式的空流式块
+                heartbeat_chunk = {
+                    "candidates": [{
+                        "content": {
+                            "parts": [{"text": ""}],
+                            "role": "model"
+                        },
+                        "finishReason": None,
+                        "index": 0
+                    }]
+                }
+
+            if heartbeat_chunk:
+                yield f"data: {json.dumps(heartbeat_chunk)}\n\n"
+            
             await asyncio.sleep(1)
 
         upstream_response = await upstream_task

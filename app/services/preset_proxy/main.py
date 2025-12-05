@@ -221,19 +221,41 @@ class PresetProxyService:
                 body["messages"] = _merge_messages(all_messages)
                 return body, model_name
             elif self.incoming_format == "gemini":
+                # 规范化传入的 Gemini 'contents' 为 'messages' 格式
                 normalized_incoming_messages = []
                 for msg in body.get("contents", []):
                     text_content = "".join(p.get("text", "") for p in msg.get("parts", []))
                     normalized_incoming_messages.append({"role": msg.get("role"), "content": text_content})
+
+                # 合并预设消息和用户消息
                 all_messages = preset_messages + normalized_incoming_messages
-                for msg in all_messages:
-                    if msg.get("role") == "system": msg["role"] = "user"
+                
+                # 将所有 system 消息的角色更改为 user
+                for message in all_messages:
+                    if message.get("role") == "system":
+                        message["role"] = "user"
+
+                # 合并相邻的 user 消息
                 merged_messages = _merge_messages(all_messages)
+
+                # 构建最终的 Gemini 'contents'
                 final_contents = []
                 for msg in merged_messages:
                     role = "user" if msg.get("role") == "user" else "model"
                     final_contents.append({"role": role, "parts": [{"text": msg.get("content", "")}]})
+                
                 body["contents"] = final_contents
+                
+                # 确保移除 systemInstruction 字段
+                if "systemInstruction" in body:
+                    del body["systemInstruction"]
+                
+                # 移除不应存在于 Gemini 请求体中的字段
+                if "model" in body:
+                    del body["model"]
+                if "stream" in body:
+                    del body["stream"]
+
                 return body, model_name
         if self.incoming_format == "openai" and target_format == "gemini":
             return openai_adapter.to_gemini_request(body, preset_messages)
@@ -245,7 +267,10 @@ class PresetProxyService:
     def _get_provider_for_chat(self, channel: Channel, official_key: OfficialKey):
         if channel.type == "openai":
             provider = openai_provider.OpenAIProvider(api_key=official_key.key, base_url=channel.api_url)
-            return lambda model, body, is_stream: provider.create_chat_completion(body)
+            def openai_sender(model, body, is_stream):
+                body['stream'] = is_stream
+                return provider.create_chat_completion(body)
+            return openai_sender
         elif channel.type == "gemini":
             provider = gemini_provider.GeminiProvider(api_key=official_key.key, base_url=channel.api_url)
             return lambda model, body, is_stream: provider.generate_content(model, body, is_stream)
@@ -331,22 +356,39 @@ class PresetProxyService:
             preset_messages = messages
 
         converted_body, model_name = self._convert_request(body, preset_messages, target_format)
-        converted_body["stream"] = False
 
         send_request_func = self._get_provider_for_chat(channel, official_key)
         upstream_task = asyncio.create_task(send_request_func(model_name, converted_body, False))
 
         while not upstream_task.done():
             self.logger.debug(f"[{self.request_id}] 伪流: 发送心跳包。")
-            # 发送一个空的 content 块作为心跳包
-            heartbeat_chunk = {
-                "id": f"chatcmpl-heartbeat-{uuid.uuid4()}",
-                "object": "chat.completion.chunk",
-                "created": int(asyncio.get_event_loop().time()),
-                "model": original_model,
-                "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": None}]
-            }
-            yield f"data: {json.dumps(heartbeat_chunk)}\n\n"
+            
+            heartbeat_chunk = {}
+            if self.incoming_format == "openai":
+                # 构造 OpenAI 格式的空流式块
+                heartbeat_chunk = {
+                    "id": f"chatcmpl-heartbeat-{uuid.uuid4()}",
+                    "object": "chat.completion.chunk",
+                    "created": int(asyncio.get_event_loop().time()),
+                    "model": original_model,
+                    "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": None}]
+                }
+            elif self.incoming_format == "gemini":
+                # 构造 Gemini 格式的空流式块
+                heartbeat_chunk = {
+                    "candidates": [{
+                        "content": {
+                            "parts": [{"text": ""}],
+                            "role": "model"
+                        },
+                        "finishReason": None,
+                        "index": 0
+                    }]
+                }
+
+            if heartbeat_chunk:
+                yield f"data: {json.dumps(heartbeat_chunk)}\n\n"
+            
             await asyncio.sleep(1)
 
         upstream_response = await upstream_task
