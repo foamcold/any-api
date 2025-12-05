@@ -82,15 +82,30 @@ def from_openai_stream_chunk(chunk: Dict[str, Any]) -> Dict[str, Any]:
     if not choices:
         return {}
 
-    delta = choices[0].get("delta", {})
+    choice = choices[0]
+    delta = choice.get("delta", {})
     content = delta.get("content")
+    finish_reason = choice.get("finish_reason")
+
+    # Gemini 流式响应的核心是 candidate 对象
+    candidate = {}
     
+    # 1. 处理文本内容
     if content:
-        return {
-            "candidates": [{
-                "content": {
-                    "parts": [{"text": content}]
-                }
-            }]
+        candidate["content"] = {
+            "parts": [{"text": content}],
+            "role": "model"
         }
-    return {}
+    
+    # 2. 处理结束原因
+    if finish_reason:
+        # OpenAI 的 'stop' 对应 Gemini 的 'STOP'
+        gemini_finish_reason = "STOP" if finish_reason == "stop" else "FINISH_REASON_UNSPECIFIED"
+        candidate["finishReason"] = gemini_finish_reason
+
+    # 如果块中既没有内容也没有结束原因，则返回空，避免发送空数据
+    if not candidate:
+        return {}
+
+    # 构建完整的 Gemini 流式块
+    return {"candidates": [candidate]}
