@@ -3,51 +3,54 @@
 同时，也负责将上游提供商的响应转换回Gemini格式。
 """
 import json
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
+from app.services.preset_proxy.utils import _merge_messages
 
-def to_openai_request(gemini_request: Dict[str, Any], model_name: str) -> Tuple[Dict[str, Any], str]:
-    """
-    将Gemini格式的请求转换为OpenAI格式。
-    返回转换后的请求体和原始模型名称。
-    """
-    # 简单的模型映射
-    if "gemini-1.5-pro" in model_name:
-        openai_model = "gpt-4-turbo"
-    elif "gemini-1.5-flash" in model_name:
-        openai_model = "gpt-3.5-turbo"
-    else:
-        openai_model = "gpt-4-turbo" # 默认
 
-    # 转换 messages
-    messages = []
+def to_openai_request(gemini_request: Dict[str, Any], preset_messages: List[Dict[str, Any]], is_stream: bool, preset_model: Optional[str] = None, channel_model: Optional[str] = None) -> Tuple[Dict[str, Any], str]:
+    """
+    将Gemini格式的请求（包含预设）转换为OpenAI格式。
+    返回转换后的请求体和模型名称。
+    """
+    model_name = gemini_request.get("model")
     
-    # 处理 system_instruction
+    if preset_model:
+        openai_model = preset_model
+    elif channel_model and channel_model != "auto":
+        openai_model = channel_model
+    else:
+        # 如果没有在预设或渠道中指定模型，则直接使用客户端传入的模型名称
+        openai_model = model_name
+
+    # 1. 将传入的Gemini消息（包括system_instruction和contents）规范化为简单的消息列表
+    normalized_gemini_messages = []
     if "system_instruction" in gemini_request:
         system_text = gemini_request["system_instruction"].get("parts", [{}])[0].get("text", "")
         if system_text:
-            messages.append({"role": "system", "content": system_text})
+            normalized_gemini_messages.append({"role": "system", "content": system_text})
 
     for content in gemini_request.get("contents", []):
         role = "user" if content.get("role") == "user" else "assistant"
-        
-        parts = content.get("parts", [])
-        # OpenAI V API支持数组格式的content
-        openai_content = []
-        for part in parts:
-            if "text" in part:
-                openai_content.append({"type": "text", "text": part["text"]})
-            elif "inlineData" in part:
-                inline_data = part["inlineData"]
-                data_url = f"data:{inline_data['mimeType']};base64,{inline_data['data']}"
-                openai_content.append({"type": "image_url", "image_url": {"url": data_url}})
+        # 注意：为了合并，这里简化了处理，只提取文本。这会丢失多模态信息。
+        text_content = "".join(p.get("text", "") for p in content.get("parts", []))
+        normalized_gemini_messages.append({"role": role, "content": text_content})
 
-        messages.append({"role": role, "content": openai_content})
+    # 2. 合并预设消息和规范化后的Gemini消息
+    all_messages = (preset_messages or []) + normalized_gemini_messages
+    merged_messages = _merge_messages(all_messages)
 
-    # 转换 generationConfig
+    # 3. 清理消息，只保留OpenAI API支持的字段
+    final_messages = [
+        {"role": msg["role"], "content": msg["content"]}
+        for msg in merged_messages
+    ]
+
+    # 4. 构建OpenAI请求
     config = gemini_request.get("generationConfig", {})
     openai_request = {
         "model": openai_model,
-        "messages": messages,
+        "messages": final_messages,
+        "stream": is_stream,
         "temperature": config.get("temperature", 0.7),
         "top_p": config.get("topP", 1.0),
         "max_tokens": config.get("maxOutputTokens", 2048),

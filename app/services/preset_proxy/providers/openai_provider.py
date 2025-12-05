@@ -1,4 +1,6 @@
 import httpx
+import logging
+import json
 from typing import Dict, Any
 
 class OpenAIProvider:
@@ -16,6 +18,8 @@ class OpenAIProvider:
         
         is_stream = body.get("stream", False)
         
+        logging.debug(f"发送到上游 (OpenAI) 的请求: URL={url}, Headers={headers}, Body={json.dumps(body, ensure_ascii=False)}")
+
         request = client.build_request("POST", url, headers=headers, json=body, timeout=300)
         
         try:

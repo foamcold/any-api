@@ -22,20 +22,20 @@ def to_gemini_request(openai_request: Dict[str, Any], preset_messages: Optional[
 
     # 合并预设消息和用户消息
     raw_messages = (preset_messages or []) + openai_request.get("messages", [])
+    
+    # 将 system 消息的角色更改为 user，以便与后续的 user 消息合并
+    # 这是参考 v1beta 路由的有效做法，以提高与 Gemini 的兼容性
+    for message in raw_messages:
+        if message.get("role") == "system":
+            message["role"] = "user"
+
     all_messages = _merge_messages(raw_messages)
 
     # 构建Gemini的contents
     contents = []
-    system_prompt = None
     for message in all_messages:
-        role = message.get("role")
-        if role == "system":
-            # Gemini通过system_instruction字段处理系统提示
-            system_prompt = {"parts": [{"text": message.get("content")}]}
-            continue
-        
         # 转换角色
-        gemini_role = "user" if role == "user" else "model"
+        gemini_role = "user" if message.get("role") == "user" else "model"
         
         # 处理content字段（可能是字符串或数组）
         content = message.get("content")
@@ -70,9 +70,6 @@ def to_gemini_request(openai_request: Dict[str, Any], preset_messages: Optional[
         "contents": contents,
         "generationConfig": generation_config,
     }
-
-    if system_prompt:
-        gemini_body["system_instruction"] = system_prompt
 
     # 转换工具
     if "tools" in openai_request:

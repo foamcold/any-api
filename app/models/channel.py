@@ -10,6 +10,7 @@ class Channel(Base):
     name = Column(String, nullable=False)
     type = Column(String, nullable=False)  # gemini, openai, etc.
     api_url = Column(String, nullable=False)
+    model = Column(String, nullable=False, server_default="auto")
     user_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

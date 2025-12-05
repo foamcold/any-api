@@ -1,4 +1,6 @@
 import httpx
+import logging
+import json
 from typing import Dict, Any
 
 class GeminiProvider:
@@ -16,6 +18,8 @@ class GeminiProvider:
             "Content-Type": "application/json",
         }
         
+        logging.debug(f"发送到上游 (Gemini) 的请求: URL={url}, Body={json.dumps(body, ensure_ascii=False)}")
+
         request = client.build_request("POST", url, headers=headers, json=body, timeout=300)
         
         try:

@@ -70,9 +70,13 @@ class PresetProxyService:
 
         preset = self.exclusive_key_obj.preset
         preset_messages = []
+        preset_model: Optional[str] = None
         if preset:
             self.logger.debug(f"[{self.request_id}] 找到关联预设: {preset.name} (ID: {preset.id})")
             messages_data = json.loads(preset.content)
+
+            if isinstance(messages_data, dict):
+                preset_model = messages_data.get("model")
             
             if isinstance(messages_data, dict) and 'preset' in messages_data:
                 messages = messages_data['preset']
@@ -100,7 +104,8 @@ class PresetProxyService:
                     msg["content"] = regex_service.process(msg["content"], rules)
 
         target_format = channel.type
-        converted_body, model_name = self._convert_request(body, preset_messages, target_format)
+        channel_model = channel.model
+        converted_body, model_name = self._convert_request(body, preset_messages, target_format, preset_model, channel_model)
         
         send_request_func = self._get_provider_for_chat(channel, official_key)
         upstream_response = await send_request_func(model_name, converted_body, is_upstream_stream)
@@ -158,7 +163,7 @@ class PresetProxyService:
             return JSONResponse(status_code=upstream_response.status_code, content={"error": {"message": error_content.decode(), "type": "upstream_error"}})
 
         response_json = upstream_response.json()
-        converted_response = self._convert_response(response_json, upstream_format, model)
+        converted_response = self._convert_response(response_json, upstream_format, model, is_stream=False)
         if preset_id:
             from app.models.preset_regex import PresetRegexRule
             from sqlalchemy.future import select
@@ -171,12 +176,12 @@ class PresetProxyService:
                         choice["message"]["content"] = regex_service.process(choice["message"]["content"], rules)
         return JSONResponse(content=converted_response)
 
-    def _convert_request(self, body: dict, preset_messages: list, target_format: str):
+    def _convert_request(self, body: dict, preset_messages: list, target_format: str, preset_model: Optional[str] = None, channel_model: Optional[str] = None):
         model_name = body.get("model")
         if self.incoming_format == target_format:
             if self.incoming_format == "openai":
                 all_messages = preset_messages + body.get("messages", [])
-                body["messages"] = self._merge_messages(all_messages)
+                body["messages"] = _merge_messages(all_messages)
                 return body, model_name
             elif self.incoming_format == "gemini":
                 normalized_incoming_messages = []
@@ -197,7 +202,7 @@ class PresetProxyService:
             return openai_adapter.to_gemini_request(body, preset_messages)
         if self.incoming_format == "gemini" and target_format == "openai":
             is_stream = self.is_stream_override if self.is_stream_override is not None else body.get("stream", False)
-            return gemini_adapter.to_openai_request(body, preset_messages, is_stream)
+            return gemini_adapter.to_openai_request(body, preset_messages, is_stream, preset_model, channel_model)
         return body, model_name
 
     def _get_provider_for_chat(self, channel: Channel, official_key: OfficialKey):
@@ -217,10 +222,10 @@ class PresetProxyService:
             return gemini_adapter.from_openai_stream_chunk(chunk)
         return chunk
 
-    def _convert_response(self, response: dict, upstream_format: str, model: str):
+    def _convert_response(self, response: dict, upstream_format: str, model: str, is_stream: bool):
         if upstream_format == self.incoming_format: return response
         if upstream_format == "gemini" and self.incoming_format == "openai":
-            return openai_adapter.from_gemini_response(response, model)
+            return openai_adapter.from_gemini_response(response, model, is_stream)
         if upstream_format == "openai" and self.incoming_format == "gemini":
             return gemini_adapter.from_openai_response(response)
         return response
@@ -317,7 +322,7 @@ class PresetProxyService:
             return
 
         response_json = upstream_response.json()
-        final_response = self._convert_response(response_json, target_format, original_model)
+        final_response = self._convert_response(response_json, target_format, original_model, is_stream=False)
         
         self.logger.debug(f"[{self.request_id}] 伪流: 将完整响应包装为流式块。")
 
