@@ -127,38 +127,49 @@ class PresetProxyService:
             result = await self.db.execute(stmt)
             rules = result.scalars().all()
 
+        buffer = b""
         async for chunk in upstream_response.aiter_bytes():
-            self.logger.debug(f"[{self.request_id}] 收到原始数据块: {chunk}")
-            if chunk.strip() == b'data: [DONE]':
-                self.logger.debug(f"[{self.request_id}] 检测到上游流结束标志 [DONE]")
-                break
-            # 假设每个块都是一个完整的 JSON 对象，以 'data: ' 开头
-            if chunk.startswith(b'data: '):
-                try:
-                    chunk_data = json.loads(chunk[6:])
-                    self.logger.debug(f"[{self.request_id}] 解析后的JSON数据: {chunk_data}")
-                    converted_chunk = self._convert_chunk(chunk_data, upstream_format, model)
-                    
-                    if not converted_chunk:
-                        self.logger.debug(f"[{self.request_id}] 转换后的数据块为空，跳过。")
-                        continue
-                    
-                    self.logger.debug(f"[{self.request_id}] 转换后的数据块: {converted_chunk}")
+            buffer += chunk
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                line = line.strip()
 
-                    # Apply regex to content if it exists
-                    if rules and "candidates" in converted_chunk:
-                        for candidate in converted_chunk["candidates"]:
-                            if "content" in candidate and "parts" in candidate["content"]:
-                                for part in candidate["content"]["parts"]:
-                                    if "text" in part:
-                                        part["text"] = regex_service.process(part["text"], rules)
-
-                    final_chunk_str = f"data: {json.dumps(converted_chunk)}\n\n"
-                    self.logger.debug(f"[{self.request_id}] 准备发送给客户端的数据: {final_chunk_str.strip()}")
-                    yield final_chunk_str
-                except json.JSONDecodeError:
-                    self.logger.warning(f"[{self.request_id}] JSON解析失败，跳过该数据块: {chunk}")
+                if not line:
                     continue
+
+                self.logger.debug(f"[{self.request_id}] 处理行: {line}")
+
+                if line == b"data: [DONE]":
+                    self.logger.debug(f"[{self.request_id}] 检测到上游流结束标志 [DONE]")
+                    yield "data: [DONE]\n\n"
+                    return
+
+                if line.startswith(b"data: "):
+                    try:
+                        chunk_data = json.loads(line[6:])
+                        self.logger.debug(f"[{self.request_id}] 解析后的JSON数据: {chunk_data}")
+                        converted_chunk = self._convert_chunk(chunk_data, upstream_format, model)
+
+                        if not converted_chunk:
+                            self.logger.debug(f"[{self.request_id}] 转换后的数据块为空，跳过。")
+                            continue
+
+                        self.logger.debug(f"[{self.request_id}] 转换后的数据块: {converted_chunk}")
+
+                        # Apply regex to content if it exists
+                        if rules and "candidates" in converted_chunk:
+                            for candidate in converted_chunk["candidates"]:
+                                if "content" in candidate and "parts" in candidate["content"]:
+                                    for part in candidate["content"]["parts"]:
+                                        if "text" in part:
+                                            part["text"] = regex_service.process(part["text"], rules)
+
+                        final_chunk_str = f"data: {json.dumps(converted_chunk)}\n\n"
+                        self.logger.debug(f"[{self.request_id}] 准备发送给客户端的数据: {final_chunk_str.strip()}")
+                        yield final_chunk_str
+                    except json.JSONDecodeError:
+                        self.logger.warning(f"[{self.request_id}] JSON解析失败，跳过该行: {line}")
+                        continue
         yield "data: [DONE]\n\n"
 
     async def _handle_non_stream_response(self, upstream_response, upstream_format: str, model: str, preset_id: Optional[int]):
