@@ -59,7 +59,9 @@ class PresetProxyService:
             messages_data = json.loads(preset.content)
             
             # 支持两种格式: [{"role":...}] 或 {"messages": [{"role":...}]}
-            if isinstance(messages_data, dict) and 'messages' in messages_data:
+            if isinstance(messages_data, dict) and 'preset' in messages_data:
+                messages = messages_data['preset']
+            elif isinstance(messages_data, dict) and 'messages' in messages_data:
                 messages = messages_data['messages']
             elif isinstance(messages_data, list):
                 messages = messages_data
