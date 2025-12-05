@@ -110,12 +110,6 @@ export default function HomePage() {
                                         <code className="text-primary">{apiBaseUrl}/v1beta/models</code>
                                     </div>
                                 </div>
-                                <div>
-                                    <div className="text-muted-foreground mb-1">// Claude 兼容端点</div>
-                                    <div className="bg-muted/50 p-3 rounded border flex items-center justify-between group">
-                                        <code className="text-primary">{apiBaseUrl}/v1/message</code>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                     </div>
