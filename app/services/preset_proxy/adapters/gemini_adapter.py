@@ -1,6 +1,6 @@
 from typing import Dict, Any, Tuple, List
 
-def to_openai_request(gemini_request: Dict[str, Any], preset_messages: List[Dict[str, str]]) -> Tuple[Dict[str, Any], str]:
+def to_openai_request(gemini_request: Dict[str, Any], preset_messages: List[Dict[str, str]], is_stream: bool) -> Tuple[Dict[str, Any], str]:
     """
     将 Gemini 请求格式转换为 OpenAI 请求格式，并注入预设。
     """
@@ -21,13 +21,24 @@ def to_openai_request(gemini_request: Dict[str, Any], preset_messages: List[Dict
         messages.append({"role": role, "content": text_content})
         
     # 从原始请求中获取模型名称
-    model_name = gemini_request.get("model", "gemini-pro") # 提供一个默认值以防万一
+    model_name = gemini_request.get("model", "gemini-pro")
     
-    return {
+    payload = {
         "model": model_name,
         "messages": messages,
-        # 其他参数的映射
-    }, model_name
+        "stream": is_stream
+    }
+
+    # 映射 generationConfig
+    gen_config = gemini_request.get("generationConfig", {})
+    if "temperature" in gen_config:
+        payload["temperature"] = gen_config["temperature"]
+    if "topP" in gen_config:
+        payload["top_p"] = gen_config["topP"]
+    if "maxOutputTokens" in gen_config:
+        payload["max_tokens"] = gen_config["maxOutputTokens"]
+    
+    return payload, model_name
 
 def from_openai_response(openai_response: Dict[str, Any]) -> Dict[str, Any]:
     """

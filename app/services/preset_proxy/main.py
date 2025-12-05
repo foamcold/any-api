@@ -175,7 +175,11 @@ class PresetProxyService:
         
         # Gemini (client) -> OpenAI (channel)
         if self.incoming_format == "gemini" and target_format == "openai":
-            return gemini_adapter.to_openai_request(body, preset_messages)
+            if self.is_stream_override is not None:
+                is_stream = self.is_stream_override
+            else:
+                is_stream = body.get("stream", False)
+            return gemini_adapter.to_openai_request(body, preset_messages, is_stream)
 
         # Fallback for unhandled conversions
         self.logger.warning(f"[{self.request_id}] Unhandled request conversion: {conversion_direction}")
