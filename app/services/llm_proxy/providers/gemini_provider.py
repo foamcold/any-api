@@ -5,7 +5,7 @@ import httpx
 from typing import Dict, Any
 
 class GeminiProvider:
-    def __init__(self, api_key: str, base_url: str = "https://generativelanguage.googleapis.com"):
+    def __init__(self, api_key: str, base_url: str):
         self.api_key = api_key
         self.base_url = base_url.rstrip('/')
         self.client = httpx.AsyncClient(timeout=120.0)

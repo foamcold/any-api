@@ -13,11 +13,11 @@ from app.core.errors import ErrorConverter
 logger = logging.getLogger(__name__)
 
 # 定义支持的API格式
-ApiFormat = Literal["openai", "gemini", "claude"]
+ApiFormat = Literal["openai", "gemini"]
 
 class UniversalConverter:
     """
-    一个通用的API格式转换器，用于在OpenAI、Gemini和Claude格式之间进行转换。
+    一个通用的API格式转换器，用于在OpenAI和Gemini格式之间进行转换。
     """
 
     # --- 格式检测 ---
@@ -27,8 +27,6 @@ class UniversalConverter:
         """
         if "contents" in body and isinstance(body["contents"], list):
             return "gemini"
-        if "messages" in body and "max_tokens" in body: # Claude-specific field
-            return "claude"
         if "messages" in body:
             return "openai"
         raise ValueError("无法检测到API格式或格式不支持")
@@ -449,133 +447,6 @@ class UniversalConverter:
             
         return gemini_response
 
-    # --- OpenAI <-> Claude ---
-
-    def claude_request_to_openai_request(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        """将Claude请求转换为OpenAI请求"""
-        messages = []
-        
-        # 处理 System Prompt
-        system_prompt = body.get("system")
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-            
-        # 处理 Messages
-        claude_messages = body.get("messages", [])
-        for msg in claude_messages:
-            messages.append({
-                "role": msg.get("role"),
-                "content": msg.get("content")
-            })
-            
-        return {
-            "messages": messages,
-            "max_tokens": body.get("max_tokens"),
-            "temperature": body.get("temperature"),
-            "stream": body.get("stream", False),
-            "model": body.get("model", "claude-3-opus-20240229") # Default or pass through
-        }
-
-    def openai_request_to_claude_request(self, request: ChatCompletionRequest) -> Dict[str, Any]:
-        """将OpenAI请求转换为Claude请求"""
-        system_prompt = None
-        messages = []
-        for msg in request.messages:
-            if msg.role == "system":
-                system_prompt = msg.content
-            else:
-                # Claude 的消息格式需要特殊处理
-                # 特别是对于多模态内容
-                messages.append({"role": msg.role, "content": msg.content})
-
-        return {
-            "model": request.model,
-            "system": system_prompt,
-            "messages": messages,
-            "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
-            "stream": request.stream,
-            # 其他参数映射...
-        }
-
-    def claude_response_to_openai_response(self, response: Dict[str, Any], model: str) -> Dict[str, Any]:
-        """将Claude响应转换为OpenAI响应"""
-        # 实现逻辑...
-        # 这需要根据Claude的具体响应格式来定
-        return {
-            "id": f"chatcmpl-{uuid.uuid4()}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": response.get("content", [{}])[0].get("text", "")
-                    },
-                    "finish_reason": "stop" # 简化处理
-                }
-            ],
-            "usage": {
-                "prompt_tokens": 0, # Claude响应中可能没有token信息
-                "completion_tokens": 0,
-                "total_tokens": 0,
-            }
-        }
-
-    def openai_response_to_claude_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
-        """将OpenAI响应转换为Claude响应"""
-        # OpenAI Response: {"id":..., "choices":[{"message":{"content":...}}], ...}
-        # Claude Response: {"id":..., "type":"message", "role":"assistant", "content":[{"type":"text", "text":...}], "model":...}
-        claude_response = {
-            "id": response.get("id", f"msg-claude-{uuid.uuid4()}"),
-            "type": "message",
-            "role": "assistant",
-            "content": [],
-            "model": response.get("model", ""),
-            "stop_reason": None,
-            "stop_sequence": None,
-            "usage": {
-                "input_tokens": response.get("usage", {}).get("prompt_tokens", 0),
-                "output_tokens": response.get("usage", {}).get("completion_tokens", 0)
-            }
-        }
-        
-        choices = response.get("choices", [])
-        if not choices:
-            return claude_response
-
-        choice = choices[0]
-        message = choice.get("message", {})
-        
-        # 转换 content 和 tool_calls
-        content = message.get("content")
-        if content:
-            claude_response["content"].append({"type": "text", "text": content})
-            
-        tool_calls = message.get("tool_calls", [])
-        for tool_call in tool_calls:
-            if tool_call.get("type") == "function":
-                function = tool_call.get("function", {})
-                claude_response["content"].append({
-                    "type": "tool_use",
-                    "id": tool_call.get("id"),
-                    "name": function.get("name"),
-                    "input": json.loads(function.get("arguments", "{}"))
-                })
-        
-        # 转换 finish_reason
-        finish_reason = choice.get("finish_reason")
-        if finish_reason == "stop":
-            claude_response["stop_reason"] = "end_turn"
-        elif finish_reason == "length":
-            claude_response["stop_reason"] = "max_tokens"
-        elif finish_reason == "tool_calls":
-             claude_response["stop_reason"] = "tool_use"
-
-        return claude_response
-        
     # --- 流式和错误处理辅助函数 ---
     def gemini_to_openai_chunk(self, response: Dict[str, Any], model: str) -> Dict[str, Any]:
         """将Gemini流式块转换为OpenAI格式"""
@@ -695,144 +566,6 @@ class UniversalConverter:
 
         return {"candidates": [candidate]}
 
-    def claude_to_openai_chunk(self, chunk: Dict[str, Any], model: str) -> Dict[str, Any]:
-        """将Claude流式块转换为OpenAI格式"""
-        # Claude的流式响应是事件驱动的，需要处理多种事件类型
-        event_type = chunk.get("type")
-        
-        # 创建一个基础的OpenAI chunk结构
-        openai_chunk = {
-            "id": f"chatcmpl-claude-{uuid.uuid4().hex[:8]}",
-            "object": "chat.completion.chunk",
-            "created": int(time.time()),
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": {},
-                "finish_reason": None
-            }]
-        }
-
-        if event_type == "message_start":
-            # message_start 事件通常包含角色信息，可以用于初始化
-            role = chunk.get("message", {}).get("role", "assistant")
-            openai_chunk["choices"][0]["delta"] = {"role": role}
-            return openai_chunk
-
-        elif event_type == "content_block_delta":
-            # 这是内容增量事件
-            delta_text = chunk.get("delta", {}).get("text", "")
-            if delta_text:
-                openai_chunk["choices"][0]["delta"] = {"content": delta_text}
-            else:
-                # 如果没有文本，返回一个空delta，避免发送空消息
-                return {}
-            return openai_chunk
-
-        elif event_type == "message_delta":
-            # message_delta 事件包含停止原因
-            finish_reason = None
-            stop_reason = chunk.get("delta", {}).get("stop_reason")
-            if stop_reason == "end_turn":
-                finish_reason = "stop"
-            elif stop_reason == "max_tokens":
-                finish_reason = "length"
-            elif stop_reason == "tool_use":
-                finish_reason = "tool_calls"
-            
-            if finish_reason:
-                openai_chunk["choices"][0]["finish_reason"] = finish_reason
-            
-            # 这个事件也可能包含使用情况统计
-            usage = chunk.get("usage", {})
-            if usage:
-                # 这个信息在流式中通常不直接发送，但可以记录
-                pass
-            
-            # 如果只有finish_reason，delta可以为空
-            if not openai_chunk["choices"][0]["delta"]:
-                 openai_chunk["choices"][0]["delta"] = {}
-
-            return openai_chunk
-
-        elif event_type == "message_stop":
-            # 这是流结束的明确信号
-            # 通常在 message_delta 中已经处理了 finish_reason，但这个可以作为补充
-            # 发送一个最终的、带有 finish_reason 的空 delta 块
-            if openai_chunk["choices"][0]["finish_reason"] is None:
-                openai_chunk["choices"][0]["finish_reason"] = "stop"
-            openai_chunk["choices"][0]["delta"] = {}
-            return openai_chunk
-            
-        # 对于 content_block_start, content_block_stop 等其他事件，我们目前忽略
-        # 因为它们不直接产生给客户端的内容。返回一个空字典表示这个chunk不生成输出。
-        return {}
-        
-    def openai_chunk_to_claude_chunk(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
-        """将OpenAI流式块转换为Claude格式"""
-        choices = chunk.get("choices")
-        if not choices:
-            return {}
-
-        choice = choices[0]
-        delta = choice.get("delta", {})
-        
-        # 事件1: message_start (通常在第一个块)
-        if "role" in delta:
-            return {
-                "type": "message_start",
-                "message": {
-                    "id": chunk.get("id", f"msg-claude-{uuid.uuid4()}"),
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [],
-                    "model": chunk.get("model", ""),
-                    "usage": {}
-                }
-            }
-
-        # 事件2: content_block_delta (内容块)
-        if "content" in delta and delta["content"]:
-            return {
-                "type": "content_block_delta",
-                "index": 0, # 假设只有一个内容块
-                "delta": {"type": "text_delta", "text": delta["content"]}
-            }
-            
-        # 事件3: tool_calls (工具调用块)
-        if "tool_calls" in delta:
-             tool_calls = delta.get("tool_calls", [])
-             if not tool_calls: return {}
-             tool_call = tool_calls[0] # 假设每次只来一个
-             function = tool_call.get("function", {})
-             
-             # Claude流式工具调用分为 start 和 delta
-             # 为简化，我们只发送一个完整的 tool_use 块
-             return {
-                "type": "content_block_start",
-                "index": tool_call.get("index", 1),
-                "content_block": {
-                    "type": "tool_use",
-                    "id": tool_call.get("id"),
-                    "name": function.get("name"),
-                    "input": json.loads(function.get("arguments", "{}"))
-                }
-            }
-
-        # 事件4: message_delta (结束原因)
-        finish_reason = choice.get("finish_reason")
-        if finish_reason:
-            stop_reason = "end_turn"
-            if finish_reason == "length": stop_reason = "max_tokens"
-            elif finish_reason == "tool_calls": stop_reason = "tool_use"
-            
-            return {
-                "type": "message_delta",
-                "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-                "usage": {"output_tokens": 0} # 简化，不在每个块都计算
-            }
-
-        return {}
 
 # 创建单例
 universal_converter = UniversalConverter()

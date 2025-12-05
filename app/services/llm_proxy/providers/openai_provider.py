@@ -5,7 +5,7 @@ import httpx
 from typing import Dict, Any
 
 class OpenAIProvider:
-    def __init__(self, api_key: str, base_url: str = "https://api.openai.com"):
+    def __init__(self, api_key: str, base_url: str):
         self.api_key = api_key
         self.base_url = base_url.rstrip('/')
         self.client = httpx.AsyncClient(timeout=120.0)

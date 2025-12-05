@@ -10,6 +10,7 @@ from app.models.key import OfficialKey
 from app.models.user import User
 from app.services.llm_proxy.adapters import openai_adapter, gemini_adapter
 from app.services.llm_proxy.providers import openai_provider, gemini_provider
+from app.core.config import settings
 
 class LLMProxyService:
     def __init__(
@@ -100,9 +101,9 @@ class LLMProxyService:
     def _get_provider(self):
         """根据目标提供商选择并实例化对应的Provider。"""
         if self.target_provider == "openai":
-            return openai_provider.OpenAIProvider(api_key=self.key_obj.key)
+            return openai_provider.OpenAIProvider(api_key=self.key_obj.key, base_url=settings.OPENAI_BASE_URL)
         elif self.target_provider == "gemini":
-            return gemini_provider.GeminiProvider(api_key=self.key_obj.key)
+            return gemini_provider.GeminiProvider(api_key=self.key_obj.key, base_url=settings.GEMINI_BASE_URL)
         raise ValueError(f"Unsupported target provider: {self.target_provider}")
 
     async def _stream_response_converter(self, upstream_response, original_model: str):

@@ -72,7 +72,7 @@ export default function HomePage() {
                             <span className="text-foreground font-medium">预设管理</span>、
                             <span className="text-foreground font-medium">正则处理</span>、
                             <span className="text-foreground font-medium">渠道管理</span>等高级功能。
-                            无缝兼容 OpenAI、Gemini、Claude 等多种格式。
+                            无缝兼容 OpenAI、Gemini 等多种格式。
                         </p>
 
                         <div className="flex flex-col sm:flex-row gap-4 justify-center mb-16">
@@ -129,7 +129,7 @@ export default function HomePage() {
                             <FeatureCard
                                 icon={<Zap className="w-10 h-10 text-orange-500" />}
                                 title="多渠道互转"
-                                description="无缝兼容 OpenAI, Gemini, Claude 等多种 API 格式，统一调用标准，轻松实现模型切换与聚合。"
+                                description="无缝兼容 OpenAI, Gemini 等多种 API 格式，统一调用标准，轻松实现模型切换与聚合。"
                             />
                             <FeatureCard
                                 icon={<Settings className="w-10 h-10 text-blue-500" />}

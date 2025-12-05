@@ -22,7 +22,7 @@ def _detect_client_format(request: Request) -> ApiFormat:
     2. Header 特征
     3. Content-Type
     
-    返回: "openai" | "gemini" | "claude"
+    返回: "openai" | "gemini"
     """
     path = request.url.path
     
@@ -34,13 +34,6 @@ def _detect_client_format(request: Request) -> ApiFormat:
     
     if path.startswith("/gemini/") or path == "/gemini":
         return "gemini"
-    
-    # Claude 特征路径: /v1/messages, /claude
-    if "/messages" in path and (path.startswith("/v1") or path.startswith("/claude")):
-        return "claude"
-    
-    if path.startswith("/claude/") or path == "/claude":
-        return "claude"
     
     # OpenAI 特征路径: /v1/chat/completions, /v1/models, /openai
     if path.startswith("/openai/") or path == "/openai":
@@ -54,10 +47,6 @@ def _detect_client_format(request: Request) -> ApiFormat:
     # Gemini 使用 x-goog-api-key
     if request.headers.get("x-goog-api-key"):
         return "gemini"
-    
-    # Claude 使用 x-api-key 和 anthropic-version
-    if request.headers.get("x-api-key") or request.headers.get("anthropic-version"):
-        return "claude"
     
     # OpenAI 使用 Authorization: Bearer
     auth_header = request.headers.get("authorization", "")

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     # Proxy
     GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com"
+    OPENAI_BASE_URL: str = "https://api.openai.com"
 
     # Server
     HOST: str = "0.0.0.0"

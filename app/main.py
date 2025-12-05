@@ -101,7 +101,6 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 # 1. API 路由 (按照从最精确到最宽泛的顺序)
 from app.api.api import api_router
-from app.api.endpoints import proxy
 from app.api.routers.passthrough.v1 import main as passthrough_v1_router
 from app.api.routers.passthrough.v1beta import main as passthrough_v1beta_router
 
@@ -113,12 +112,9 @@ from starlette.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 # 3. 其他API路由
-# 3. 新的、解耦的透传路由 (应该在旧的代理路由之前加载)
+# 新的、解耦的路由
 app.include_router(passthrough_v1_router.router, prefix="/v1")
 app.include_router(passthrough_v1beta_router.router, prefix="/v1beta")
-
-# 4. 旧的代理路由 (将被逐步废弃)
-# app.include_router(proxy.router) # 保留此路由用于处理 gapi- 前缀的预设密钥
 
 # 4. SPA 前端 "后备" 路由 (必须在最后)
 # 4. SPA 前端服务 (必须在所有API路由之后)

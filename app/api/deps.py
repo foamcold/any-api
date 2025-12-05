@@ -1,5 +1,5 @@
 import logging
-from typing import Generator, Optional, Tuple
+from typing import Generator, Optional, Tuple, Union
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
@@ -13,7 +13,6 @@ from app.models.user import User
 from app.models.key import ExclusiveKey, OfficialKey
 from app.schemas.token import TokenPayload
 from app.services.gemini_service import gemini_service
-from app.services.claude_service import claude_service
 from app.models.channel import Channel
 from app.models.system_config import SystemConfig
 from app.services.turnstile_service import turnstile_service
@@ -188,80 +187,55 @@ async def get_optional_current_user(
             return None
     return None
 
-async def get_official_key_from_proxy(
+async def get_key_info(
     request: Request,
     db: AsyncSession = Depends(get_db)
-) -> Tuple[OfficialKey, Optional[User]]:
+) -> Tuple[str, Union[ExclusiveKey, OfficialKey], Optional[User]]:
     """
-    从代理请求中提取、验证并返回一个有效的官方API密钥。
-    - 如果提供的是专属密钥 (gapi-...), 则验证并返回一个轮询的官方密钥。
-    - 如果提供的是普通密钥, 则直接返回。
-    - 同时返回关联的用户对象（如果存在）。
+    统一的密钥处理依赖项。
+    返回 (客户端密钥, 密钥对象, 用户对象)。
     """
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        # 兼容某些客户端可能使用的 x-goog-api-key 或 key 参数
-        client_key = request.headers.get("x-goog-api-key") or request.query_params.get("key")
-        if not client_key:
-            logging.debug("未找到 API 密钥")
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未提供 API 密钥")
-    else:
-        client_key = auth_header.split(" ")[1]
+    client_key = _get_client_key(request)
+    if not client_key:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未提供 API 密钥。")
 
-    logging.debug(f"提取到的 Key: {client_key}, 来源: {'Auth Header' if auth_header else 'Query/X-Header'}")
-
-    if client_key and client_key.startswith("gapi-"):
-        # 是专属密钥，需要验证并轮询
-        result = await db.execute(
-            select(ExclusiveKey).filter(ExclusiveKey.key == client_key, ExclusiveKey.is_active == True)
+    if client_key.startswith("gapi-"):
+        from sqlalchemy.orm import selectinload
+        stmt = (
+            select(ExclusiveKey)
+            .options(selectinload(ExclusiveKey.preset), selectinload(ExclusiveKey.channel))
+            .filter(ExclusiveKey.key == client_key, ExclusiveKey.is_active == True)
         )
+        result = await db.execute(stmt)
         exclusive_key = result.scalars().first()
-        
+
         if not exclusive_key:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的专属密钥")
-            
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效或已禁用的预设密钥。")
+
         user_result = await db.execute(select(User).filter(User.id == exclusive_key.user_id))
         user = user_result.scalars().first()
-        
-        # 必须绑定渠道
-        if not exclusive_key.channel_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该密钥未绑定任何渠道")
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="密钥关联的用户不存在。")
 
-        channel_res = await db.execute(select(Channel).filter(Channel.id == exclusive_key.channel_id))
-        channel = channel_res.scalars().first()
-        
-        if not channel:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="绑定的渠道不存在")
-
-        channel_type = channel.type.lower()
-        official_key = None
-        
-        logging.debug(f"专属密钥绑定渠道: ID={channel.id}, 名称={channel.name}, 类型={channel_type}")
-        
-        official_key_obj = None
-        try:
-            if channel_type == "claude":
-                official_key_obj = await claude_service.get_active_key(db, channel_id=channel.id)
-            elif channel_type in ["openai", "gemini"]:
-                official_key_obj = await gemini_service.get_active_key(db, channel_id=channel.id)
-            else:  # 为其他可能的类型提供一个默认回退
-                official_key_obj = await gemini_service.get_active_key(db, channel_id=channel.id)
-
-            if not official_key_obj:
-                error_detail = f"渠道 '{channel.name}' (类型: {channel_type}, ID: {channel.id}) 下没有可用的官方密钥。"
-                raise HTTPException(status_code=503, detail=error_detail)
-
-            logging.debug(f"成功从渠道 {channel.name} 获取到官方密钥: {official_key_obj.key[:8]}...")
-            return official_key_obj, user
-
-        except HTTPException as e:
-            # 重复抛出已知的HTTP异常
-            raise e
-        except Exception as e:
-            # 捕获在获取密钥期间可能发生的任何其他意外错误
-            raise HTTPException(status_code=500, detail=f"获取密钥时发生未知错误: {e}")
+        return client_key, exclusive_key, user
     else:
-        # 是普通密钥, 无法直接关联到数据库中的对象，日志记录功能将受限
-        # 为了兼容性，我们创建一个临时的、不保存到数据库的 OfficialKey 对象
+        # 对于非 gapi- 密钥，我们假设它是一个官方密钥，并创建一个临时对象。
         temp_key_obj = OfficialKey(key=client_key)
-        return temp_key_obj, None
+        return client_key, temp_key_obj, None
+
+def _get_client_key(request: Request) -> Optional[str]:
+    """从请求中提取客户端 API 密钥的辅助函数。"""
+    logging.debug(f"检查请求中的密钥, Path: {request.url.path}, Headers: {request.headers}")
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        key = auth_header.split(" ")[1]
+        logging.debug(f"从 Authorization Header 中找到密钥: {key[:10]}...")
+        return key
+    
+    # 兼容其他常见的位置
+    key = request.headers.get("x-api-key") or request.query_params.get("key") or request.headers.get("x-goog-api-key")
+    if key:
+        logging.debug(f"从 x-api-key 或查询参数中找到密钥: {key[:10]}...")
+    else:
+        logging.debug("在任何位置都未找到密钥。")
+    return key

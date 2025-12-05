@@ -2,7 +2,7 @@
 统一的错误处理工具
 
 提供创建和转换各种 API 格式错误响应的工具函数。
-支持格式：OpenAI、Gemini、Claude
+支持格式：OpenAI、Gemini
 """
 
 from typing import Dict, Any, Literal
@@ -10,7 +10,7 @@ import json
 import time
 import uuid
 
-ApiFormat = Literal["openai", "gemini", "claude"]
+ApiFormat = Literal["openai", "gemini"]
 
 
 class APIError:
@@ -75,31 +75,6 @@ class APIError:
         return error_obj
     
     @staticmethod
-    def claude_error(
-        message: str,
-        error_type: str = "api_error",
-        error_code: str = None
-    ) -> Dict[str, Any]:
-        """
-        创建 Claude 格式的错误响应
-        
-        Args:
-            message: 错误消息
-            error_type: 错误类型
-            error_code: 错误代码
-            
-        Returns:
-            Claude 格式的错误对象
-        """
-        return {
-            "type": "error",
-            "error": {
-                "type": error_type,
-                "message": message
-            }
-        }
-    
-    @staticmethod
     def create_error(
         message: str,
         status_code: int,
@@ -148,12 +123,6 @@ class APIError:
                 status=gemini_status,
                 code=status_code
             )
-        elif api_format == "claude":
-            return APIError.claude_error(
-                message=message,
-                error_type=error_type,
-                error_code=str(status_code)
-            )
         else:
             # 默认返回 OpenAI 格式
             return APIError.openai_error(
@@ -199,23 +168,6 @@ class ErrorConverter:
             http_code = 400
         
         return APIError.gemini_error(message, status, http_code)
-    
-    @staticmethod
-    def openai_to_claude(openai_error: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        将 OpenAI 格式错误转换为 Claude 格式
-        
-        Args:
-            openai_error: OpenAI 格式的错误对象
-            
-        Returns:
-            Claude 格式的错误对象
-        """
-        error_obj = openai_error.get("error", {})
-        message = error_obj.get("message", "未知错误")
-        error_type = error_obj.get("type", "api_error")
-        
-        return APIError.claude_error(message, error_type)
     
     @staticmethod
     def gemini_to_openai(gemini_error: bytes | Dict[str, Any], status_code: int = None) -> Dict[str, Any]:
@@ -268,50 +220,6 @@ class ErrorConverter:
             )
     
     @staticmethod
-    def claude_to_openai(claude_error: bytes | Dict[str, Any], status_code: int = None) -> Dict[str, Any]:
-        """
-        将 Claude 格式错误转换为 OpenAI 格式
-        
-        Args:
-            claude_error: Claude 格式的错误对象（可以是 bytes 或 dict）
-            status_code: HTTP 状态码
-            
-        Returns:
-            OpenAI 格式的错误对象
-        """
-        try:
-            if isinstance(claude_error, bytes):
-                claude_error = json.loads(claude_error.decode('utf-8'))
-            
-            if claude_error.get("type") == "error":
-                error_obj = claude_error.get("error", {})
-                message = error_obj.get("message", "Claude API 错误")
-                error_type = error_obj.get("type", "api_error")
-                
-                return APIError.openai_error(
-                    message=message,
-                    error_type=error_type,
-                    code=str(status_code) if status_code else None
-                )
-            else:
-                # 可能是其他格式，尝试提取 message
-                message = claude_error.get("message") or claude_error.get("detail", "Claude API 错误")
-                return APIError.openai_error(message=message, code=str(status_code) if status_code else None)
-        except Exception:
-            # 解析失败，返回通用错误
-            error_message = f"Claude Error (HTTP {status_code}): "
-            if isinstance(claude_error, bytes):
-                error_message += claude_error.decode('utf-8', errors='ignore')
-            else:
-                error_message += str(claude_error)
-            
-            return APIError.openai_error(
-                message=error_message,
-                error_type="api_error",
-                code=str(status_code) if status_code else None
-            )
-    
-    @staticmethod
     def convert_upstream_error(
         error_content: bytes | Dict[str, Any],
         status_code: int,
@@ -342,8 +250,6 @@ class ErrorConverter:
         # 先转换为 OpenAI 格式（中间格式）
         if from_format == "gemini":
             openai_error = ErrorConverter.gemini_to_openai(error_content, status_code)
-        elif from_format == "claude":
-            openai_error = ErrorConverter.claude_to_openai(error_content, status_code)
         else:
             # 已经是 OpenAI 格式或未知格式
             if isinstance(error_content, bytes):
@@ -362,8 +268,6 @@ class ErrorConverter:
             return openai_error
         elif to_format == "gemini":
             return ErrorConverter.openai_to_gemini(openai_error)
-        elif to_format == "claude":
-            return ErrorConverter.openai_to_claude(openai_error)
         else:
             return openai_error
 

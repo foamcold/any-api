@@ -5,7 +5,7 @@ from datetime import datetime
 # Channel Schemas
 class ChannelBase(BaseModel):
     name: str
-    type: str  # gemini, openai, claude, etc.
+    type: str  # gemini, openai, etc.
     api_url: str
 
 class ChannelCreate(ChannelBase):

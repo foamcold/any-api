@@ -67,7 +67,6 @@ interface PaginatedResponse<T> {
 const DEFAULT_CHANNEL_TYPES = [
     { value: 'gemini', label: 'Gemini', defaultUrl: 'https://generativelanguage.googleapis.com' },
     { value: 'openai', label: 'OpenAI', defaultUrl: 'https://api.openai.com' },
-    { value: 'claude', label: 'Claude', defaultUrl: 'https://api.anthropic.com' },
 ];
 
 export default function ChannelsPage() {

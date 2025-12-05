@@ -1,0 +1,26 @@
+import httpx
+from typing import Dict, Any
+
+class OpenAIProvider:
+    def __init__(self, api_key: str, base_url: str):
+        self.api_key = api_key
+        self.base_url = base_url.rstrip('/')
+
+    async def create_chat_completion(self, body: Dict[str, Any]) -> httpx.Response:
+        client = httpx.AsyncClient()
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        url = f"{self.base_url}/v1/chat/completions"
+        
+        is_stream = body.get("stream", False)
+        
+        request = client.build_request("POST", url, headers=headers, json=body, timeout=300)
+        
+        try:
+            response = await client.send(request, stream=is_stream)
+            return response
+        except httpx.RequestError as e:
+            error_body = {"error": {"message": f"Upstream request failed: {e}", "type": "connection_error"}}
+            return httpx.Response(status_code=502, json=error_body, request=request)
