@@ -128,14 +128,22 @@ class PresetProxyService:
             rules = result.scalars().all()
 
         async for chunk in upstream_response.aiter_bytes():
+            self.logger.debug(f"[{self.request_id}] 收到原始数据块: {chunk}")
+            if chunk.strip() == b'data: [DONE]':
+                self.logger.debug(f"[{self.request_id}] 检测到上游流结束标志 [DONE]")
+                break
             # 假设每个块都是一个完整的 JSON 对象，以 'data: ' 开头
             if chunk.startswith(b'data: '):
                 try:
                     chunk_data = json.loads(chunk[6:])
+                    self.logger.debug(f"[{self.request_id}] 解析后的JSON数据: {chunk_data}")
                     converted_chunk = self._convert_chunk(chunk_data, upstream_format, model)
                     
                     if not converted_chunk:
+                        self.logger.debug(f"[{self.request_id}] 转换后的数据块为空，跳过。")
                         continue
+                    
+                    self.logger.debug(f"[{self.request_id}] 转换后的数据块: {converted_chunk}")
 
                     # Apply regex to content if it exists
                     if rules and "candidates" in converted_chunk:
@@ -145,8 +153,11 @@ class PresetProxyService:
                                     if "text" in part:
                                         part["text"] = regex_service.process(part["text"], rules)
 
-                    yield f"data: {json.dumps(converted_chunk)}\n\n"
+                    final_chunk_str = f"data: {json.dumps(converted_chunk)}\n\n"
+                    self.logger.debug(f"[{self.request_id}] 准备发送给客户端的数据: {final_chunk_str.strip()}")
+                    yield final_chunk_str
                 except json.JSONDecodeError:
+                    self.logger.warning(f"[{self.request_id}] JSON解析失败，跳过该数据块: {chunk}")
                     continue
         yield "data: [DONE]\n\n"
 

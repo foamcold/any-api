@@ -1,5 +1,8 @@
 import json
+import logging
 from typing import Dict, Any, Tuple, List, Optional
+
+logger = logging.getLogger(__name__)
 
 def to_openai_request(gemini_request: Dict[str, Any], preset_messages: List[Dict[str, str]], is_stream: bool) -> Tuple[Dict[str, Any], str]:
     """
@@ -79,19 +82,25 @@ def from_openai_stream_chunk(openai_chunk: Dict[str, Any]) -> Optional[Dict[str,
     """
     将OpenAI的流式数据块转换为Gemini格式的流式数据块。
     """
+    logger.debug(f"开始转换OpenAI流式块: {openai_chunk}")
     if not openai_chunk.get("choices"):
+        logger.debug("块中无 'choices'，返回 None")
         return None
 
     choice = openai_chunk["choices"][0]
     delta = choice.get("delta", {})
     parts = []
 
+    # 1. 处理内容 (content)
     if "content" in delta and delta["content"]:
+        logger.debug(f"提取到内容: {delta['content']}")
         parts.append({"text": delta["content"]})
     
+    # 2. 处理工具调用 (tool_calls)
     if "tool_calls" in delta:
         for tool_call in delta["tool_calls"]:
             func = tool_call.get("function", {})
+            logger.debug(f"提取到工具调用: {func}")
             parts.append({
                 "functionCall": {
                     "name": func.get("name"),
@@ -99,25 +108,28 @@ def from_openai_stream_chunk(openai_chunk: Dict[str, Any]) -> Optional[Dict[str,
                 }
             })
 
-    # 如果没有实际内容，并且没有结束原因，则不生成数据块
-    if not parts and not choice.get("finish_reason"):
+    # 3. 处理结束原因 (finish_reason)
+    finish_reason = None
+    raw_reason = choice.get("finish_reason")
+    if raw_reason:
+        logger.debug(f"提取到结束原因: {raw_reason}")
+        if raw_reason == "stop": finish_reason = "STOP"
+        elif raw_reason == "length": finish_reason = "MAX_TOKENS"
+        elif raw_reason == "content_filter": finish_reason = "SAFETY"
+        else: finish_reason = "FINISH_REASON_UNSPECIFIED"
+
+    # 核心逻辑：如果既没有内容部分，也没有结束原因，则这是一个空的更新，应跳过
+    if not parts and not finish_reason:
+        logger.debug("块中无有效内容或结束原因，返回 None")
         return None
 
-    candidate = {
-        "content": {"parts": parts, "role": "model"},
-        "index": choice.get("index", 0),
-    }
-
-    # 处理结束原因
-    if choice.get("finish_reason"):
-        finish_reason = "STOP"
-        raw_reason = choice.get("finish_reason")
-        if raw_reason == "length": finish_reason = "MAX_TOKENS"
-        elif raw_reason == "content_filter": finish_reason = "SAFETY"
+    # 构建 candidate
+    candidate = { "index": choice.get("index", 0) }
+    if parts:
+        candidate["content"] = {"parts": parts, "role": "model"}
+    if finish_reason:
         candidate["finishReason"] = finish_reason
-    
-    # 移除空的 content
-    if not candidate["content"]["parts"]:
-        del candidate["content"]
 
-    return {"candidates": [candidate]}
+    final_gemini_chunk = {"candidates": [candidate]}
+    logger.debug(f"成功转换为Gemini流式块: {final_gemini_chunk}")
+    return final_gemini_chunk
