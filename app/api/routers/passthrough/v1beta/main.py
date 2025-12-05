@@ -15,52 +15,74 @@ async def generate_content(
     request: Request,
     model_and_action: str = Path(..., description="模型名称和动作，例如 'gemini-1.5-pro:generateContent'"),
     db: AsyncSession = Depends(deps.get_db),
-    key_info: tuple = Depends(deps.get_official_key_from_proxy)
+    key_info: tuple = Depends(deps.get_key_info)
 ):
     """
-    处理 /v1beta/models/{model}:{action} 请求。
-    根据密钥类型（AIza 或 sk-）决定目标上游。
+    统一处理 /v1beta/models/{model}:{action} 请求，并根据密钥类型分派。
     """
-    official_key, user = key_info
-    client_key = official_key.key
+    client_key, key_obj, user = key_info
 
-    if client_key.startswith("AIza"):
-        target_provider = "gemini"
-    elif client_key.startswith("sk-"):
-        target_provider = "openai"
+    logger.debug(f"路由 /v1beta/models：准备根据密钥类型分派。客户端密钥: '{client_key}'")
+
+    if client_key.startswith("gapi-"):
+        logger.debug("检测到 gapi- 密钥，正在分派到 PresetProxyService...")
+        from app.services.preset_proxy.main import PresetProxyService
+        
+        is_stream = ":streamGenerateContent" in model_and_action
+
+        service = PresetProxyService(
+            db=db,
+            exclusive_key_obj=key_obj,
+            user=user,
+            incoming_format="gemini",
+            is_stream_override=is_stream
+        )
+        
+        # For preset mode, we need to reconstruct the request to pass the model name
+        body = await request.json()
+        body['model'] = model_and_action.split(":")[0]
+        _body_bytes = json.dumps(body).encode('utf-8')
+        _stream_sent = False
+        async def receive():
+            nonlocal _stream_sent
+            if not _stream_sent:
+                _stream_sent = True
+                return {'type': 'http.request', 'body': _body_bytes, 'more_body': False}
+            return {'type': 'http.disconnect'}
+        new_request = Request(scope=request.scope, receive=receive)
+        return await service.proxy_request(new_request)
     else:
-        # 默认或可以返回错误
-        target_provider = "gemini"
-        logger.warning(f"无法从Key前缀确定目标服务商，将默认使用: {target_provider}")
+        logger.debug("检测到非 gapi- 密钥，正在分派到 LLMProxyService...")
+        if client_key.startswith("AIza"):
+            target_provider = "gemini"
+        elif client_key.startswith("sk-"):
+            target_provider = "openai"
+        else:
+            target_provider = "gemini"
 
-    # 检查是否为流式请求
-    is_stream = "streamGenerateContent" in model_and_action
-
-    # 从路径中提取模型名称并附加到请求体中
-    body = await request.json()
-    model_name = model_and_action.split(":")[0]
-    body['model'] = model_name
-
-    # 创建一个新的Request对象，因为原始的request.body()只能读取一次
-    # 我们需要一个有状态的 receive 函数，因为它会被多次调用。
-    _body_bytes = json.dumps(body).encode('utf-8')
-    _stream_sent = False
-    async def receive():
-        nonlocal _stream_sent
-        if not _stream_sent:
-            _stream_sent = True
-            return {'type': 'http.request', 'body': _body_bytes, 'more_body': False}
-        return {'type': 'http.disconnect'}
-
-    new_request = Request(scope=request.scope, receive=receive)
-
-    proxy_service = LLMProxyService(
-        db=db,
-        official_key_obj=official_key,
-        user=user,
-        incoming_format="gemini", # /v1beta 接收Gemini格式
-        target_provider=target_provider,
-        is_stream_override=is_stream
-    )
-    
-    return await proxy_service.proxy_request(new_request)
+        is_stream = "streamGenerateContent" in model_and_action
+        body = await request.json()
+        body['model'] = model_and_action.split(":")[0]
+        _body_bytes = json.dumps(body).encode('utf-8')
+        _stream_sent = False
+        async def receive():
+            nonlocal _stream_sent
+            if not _stream_sent:
+                _stream_sent = True
+                return {'type': 'http.request', 'body': _body_bytes, 'more_body': False}
+            return {'type': 'http.disconnect'}
+        
+        # 重新构建请求时，必须包含原始的 headers
+        new_scope = request.scope.copy()
+        new_scope['headers'] = request.headers.raw
+        new_request = Request(scope=new_scope, receive=receive)
+        
+        proxy_service = LLMProxyService(
+            db=db,
+            official_key_obj=key_obj,
+            user=user,
+            incoming_format="gemini",
+            target_provider=target_provider,
+            is_stream_override=is_stream
+        )
+        return await proxy_service.proxy_request(new_request)
