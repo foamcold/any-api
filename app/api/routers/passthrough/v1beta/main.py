@@ -38,6 +38,7 @@ async def generate_content(
     # 重新构建请求以包含正确的模型名称
     body = await request.json()
     body['model'] = model_and_action.split(":")[0]
+    body['stream'] = is_stream_override
     _body_bytes = json.dumps(body).encode('utf-8')
     
     _stream_sent = False
