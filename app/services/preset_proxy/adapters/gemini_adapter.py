@@ -4,28 +4,43 @@ def to_openai_request(gemini_request: Dict[str, Any], preset_messages: List[Dict
     """
     将 Gemini 请求格式转换为 OpenAI 请求格式，并注入预设。
     """
-    messages = []
     
-    # 注入预设
-    for msg in preset_messages:
-        messages.append(msg)
-        
-    # 转换 Gemini 的 contents
+    # 1. 转换 Gemini 的 contents
+    converted_messages = []
     contents = gemini_request.get("contents", [])
     for content in contents:
         role = content.get("role")
         if role == "model":
             role = "assistant"
         
+        # 确保角色对于OpenAI是有效的
+        if role not in ["user", "assistant", "system"]:
+            # 跳过无效角色或进行适当处理
+            continue
+
         text_content = "".join([p.get("text", "") for p in content.get("parts", [])])
-        messages.append({"role": role, "content": text_content})
-        
+        converted_messages.append({"role": role, "content": text_content})
+
+    # 2. 合并预设和转换后的消息，处理连续的同角色消息
+    all_messages = preset_messages + converted_messages
+    if not all_messages:
+        final_messages = []
+    else:
+        final_messages = [all_messages[0]]
+        for i in range(1, len(all_messages)):
+            # 如果当前消息的角色与最终消息列表中的最后一个消息角色相同
+            if all_messages[i]["role"] == final_messages[-1]["role"]:
+                # 合并内容
+                final_messages[-1]["content"] += "\n" + all_messages[i]["content"]
+            else:
+                final_messages.append(all_messages[i])
+
     # 从原始请求中获取模型名称
     model_name = gemini_request.get("model", "gemini-pro")
     
     payload = {
         "model": model_name,
-        "messages": messages,
+        "messages": final_messages,
         "stream": is_stream
     }
 
