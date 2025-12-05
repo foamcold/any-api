@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.endpoints import auth, users, keys, channels, presets, regex, preset_regex, proxy, logs, system, generic_proxy, setup, gemini_routes, captcha
+from app.api.endpoints import auth, users, keys, channels, presets, regex, preset_regex, proxy, logs, system, setup, captcha
 
 api_router = APIRouter()
 api_router.include_router(setup.router, prefix="/setup", tags=["setup"])
