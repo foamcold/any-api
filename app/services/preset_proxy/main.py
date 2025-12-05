@@ -54,7 +54,16 @@ class PresetProxyService:
         preset_messages = []
         if preset:
             # The preset content is a JSON string of a list of messages
-            messages = json.loads(preset.content)
+            messages_data = json.loads(preset.content)
+            
+            # 支持两种格式: [{"role":...}] 或 {"messages": [{"role":...}]}
+            if isinstance(messages_data, dict) and 'messages' in messages_data:
+                messages = messages_data['messages']
+            elif isinstance(messages_data, list):
+                messages = messages_data
+            else:
+                messages = []
+
             for msg in messages:
                 if "content" in msg and isinstance(msg["content"], str):
                     msg["content"] = variable_service.parse_variables(msg["content"])
