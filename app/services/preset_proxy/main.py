@@ -88,6 +88,12 @@ class PresetProxyService:
             is_stream = body.get("stream", False)
             
         if is_stream:
+            if upstream_response.status_code >= 400:
+                error_content = await upstream_response.aread()
+                return JSONResponse(
+                    status_code=upstream_response.status_code,
+                    content={"error": {"message": error_content.decode(), "type": "upstream_error"}}
+                )
             return StreamingResponse(self._stream_response(upstream_response, target_format, model_name, preset.id if preset else None), media_type="text/event-stream")
         else:
             return await self._handle_non_stream_response(upstream_response, target_format, model_name, preset.id if preset else None)
