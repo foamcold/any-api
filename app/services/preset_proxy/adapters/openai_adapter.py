@@ -3,33 +3,9 @@ import json
 import time
 import uuid
 import logging
+from app.services.preset_proxy.utils import _merge_messages
 
 logger = logging.getLogger(__name__)
-
-def _merge_messages(messages: list) -> list:
-    """
-    合并连续的、角色相同的消息。
-    """
-    if not messages:
-        return []
-
-    merged = [messages[0]]
-    for i in range(1, len(messages)):
-        current_msg = messages[i]
-        last_msg = merged[-1]
-
-        # 核心修改：使用 --- 作为分隔符合并相邻的 user 消息
-        if current_msg.get("role") == "user" and last_msg.get("role") == "user":
-            if "content" in last_msg and isinstance(last_msg["content"], str):
-                # 使用高关注度的分隔符
-                last_msg["content"] += "\n\n---\n\n" + current_msg.get("content", "")
-        elif current_msg.get("role") == last_msg.get("role"):
-             if "content" in last_msg and isinstance(last_msg["content"], str):
-                last_msg["content"] += "\n" + current_msg.get("content", "")
-        else:
-            merged.append(current_msg)
-    
-    return merged
 
 def to_gemini_request(openai_request: Dict[str, Any], preset_messages: List[Dict[str, str]]) -> Tuple[Dict[str, Any], str]:
     """
@@ -67,7 +43,6 @@ def to_gemini_request(openai_request: Dict[str, Any], preset_messages: List[Dict
             "maxOutputTokens": openai_request.get("max_tokens", 2048),
         }
     }
-    # 移除 system_instruction 的逻辑
     
     model_name = openai_request.get("model", "gemini-1.5-pro")
     logger.debug(f"最终发送给上游的 payload: {payload}")

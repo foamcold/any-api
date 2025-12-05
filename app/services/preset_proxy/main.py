@@ -12,6 +12,7 @@ from app.models.channel import Channel
 from app.models.preset import Preset
 from app.services.preset_proxy.adapters import openai_adapter, gemini_adapter
 from app.services.preset_proxy.providers import openai_provider, gemini_provider
+from app.services.preset_proxy.utils import _merge_messages
 from app.services.variable_service import variable_service
 from app.services.gemini_service import gemini_service
 from app.services.regex_service import regex_service
@@ -241,9 +242,19 @@ class PresetProxyService:
                 return body, model_name
             
             elif self.incoming_format == "gemini":
-                # 合并 Gemini contents
-                all_contents = preset_messages + body.get("contents", [])
-                body["contents"] = self._merge_messages(all_contents)
+                # 当输入和输出都是 Gemini 时，应用与 openai -> gemini 相同的转换逻辑
+                
+                # 1. 将所有 system 消息转换为 user 消息
+                all_messages = preset_messages + body.get("contents", [])
+                for msg in all_messages:
+                    if msg["role"] == "system":
+                        msg["role"] = "user"
+                
+                # 2. 合并消息
+                merged_messages = _merge_messages(all_messages)
+                
+                # 3. 重新构建 contents
+                body["contents"] = merged_messages
                 return body, model_name
 
         # --- 格式不同的情况 ---
@@ -392,26 +403,3 @@ class PresetProxyService:
             return {"candidates": [{"content": {"role": "model", "parts": [{"text": full_response_content}]}}]}
         return {}
 
-    def _merge_messages(self, messages: list) -> list:
-        """
-        合并连续的、角色相同的消息。
-        """
-        if not messages:
-            return []
-
-        merged = [messages[0]]
-        for i in range(1, len(messages)):
-            current_msg = messages[i]
-            last_msg = merged[-1]
-
-            # 检查角色是否相同
-            if current_msg.get("role") == last_msg.get("role"):
-                # 合并 content 或 parts
-                if "content" in last_msg and isinstance(last_msg["content"], str):
-                    last_msg["content"] += "\n" + current_msg.get("content", "")
-                elif "parts" in last_msg and isinstance(last_msg["parts"], list):
-                    last_msg["parts"].extend(current_msg.get("parts", []))
-            else:
-                merged.append(current_msg)
-        
-        return merged
