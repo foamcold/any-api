@@ -30,6 +30,7 @@ env/
 
 # IDE
 .vscode/
+.roo/
 .idea/
 *.swp
 *.swo
@@ -62,7 +63,6 @@ logs/
 .DS_Store
 Thumbs.db
 
-# 前端构建
 # 前端构建
 dist/
 build/
